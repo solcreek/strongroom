@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Miniflare } from 'miniflare';
 import { Strongroom } from '../packages/strongroom/src/client.ts';
 import { env, token, context, encryptToken } from './helpers.mjs';
@@ -42,6 +45,17 @@ test('real workerd and Node HTTP hosts interoperate through SDK and CLI', { time
     const input = JSON.stringify({ envelope: JSON.parse(encrypted.stdout).envelope, context });
     const decrypted = await cli(['decrypt'], nodeUrl, input);
     assert.equal(decrypted.code, 0, decrypted.stderr); assert.deepEqual(JSON.parse(decrypted.stdout), { plaintext: 'cli-secret' });
+    // An encrypt result file and a bare envelope both work with --envelope; stdin then carries only the context.
+    const dir = await mkdtemp(join(tmpdir(), 'strongroom-envelope-'));
+    try {
+      await writeFile(join(dir, 'result.json'), encrypted.stdout); await writeFile(join(dir, 'bare.json'), JSON.stringify(JSON.parse(encrypted.stdout).envelope));
+      for (const file of ['result.json', 'bare.json']) {
+        const r = await cli(['decrypt', '--envelope', join(dir, file)], workerUrl, JSON.stringify({ context }));
+        assert.equal(r.code, 0, r.stderr); assert.deepEqual(JSON.parse(r.stdout), { plaintext: 'cli-secret' });
+      }
+      assert.equal((await cli(['decrypt', '--envelope', join(dir, 'bare.json')], workerUrl, input)).code, 2);
+      assert.equal((await cli(['encrypt', '--envelope', join(dir, 'bare.json')], workerUrl, input)).code, 2);
+    } finally { await rm(dir, { recursive: true, force: true }); }
     const denied = await cli(['decrypt'], workerUrl, input, encryptToken);
     assert.equal(denied.code, 3); assert.equal(denied.stdout, ''); assert.equal(JSON.parse(denied.stderr).error.code, 'FORBIDDEN');
     assert.equal((await cli(['encrypt'], workerUrl, '{bad-json')).code, 2);

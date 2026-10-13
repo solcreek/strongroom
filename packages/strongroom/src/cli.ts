@@ -10,7 +10,7 @@ const help = {
   name: 'strongroom', version: capabilities.version, nonInteractive: true,
   commands: {
     encrypt: 'Read EncryptInput JSON from stdin or --input FILE; return {envelope}.',
-    decrypt: 'Read DecryptInput JSON from stdin or --input FILE; return {plaintext}.',
+    decrypt: 'Read DecryptInput JSON from stdin or --input FILE; return {plaintext}. With --envelope FILE (an encrypt result or a bare envelope), the input is just {context}.',
     schema: 'Return OpenAPI; schema encrypt or schema decrypt returns the input JSON Schema. No network or credentials needed.',
     capabilities: 'Return local CLI/API capabilities. No network or credentials needed.',
     doctor: 'Check remote readiness and API version. Does not exercise token permissions or KMS; use probe.',
@@ -19,7 +19,7 @@ const help = {
     init: 'Create random LOCAL DEVELOPMENT keys and tokens in --directory DIR (default .strongroom), with private file permissions.',
     token: 'Write a new random bearer token to a NEW --token-file FILE (mode 0600); return its SHA-256 digest, and a principal entry when --tenant and --keys are given.',
   },
-  flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'token: principal tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--key': 'probe: key reference', '--record': 'probe: recordId (default strongroom-probe)', '--help': 'This JSON document', '--version': 'JSON version' },
+  flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'token: principal tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--key': 'probe: key reference', '--envelope': 'decrypt: file holding {envelope} or an envelope', '--record': 'probe: recordId (default strongroom-probe)', '--help': 'This JSON document', '--version': 'JSON version' },
   environment: ['STRONGROOM_URL', 'STRONGROOM_TOKEN', 'STRONGROOM_TOKEN_FILE'],
   output: { success: 'One JSON object on stdout, or --output FILE.', error: 'One JSON error object on stderr. No stack traces.' },
   exitCodes: { '0': 'success', '2': 'input/configuration error', '3': 'authentication/authorization error', '4': 'request/decryption rejected', '5': 'retryable network/provider error', '6': 'service KMS credentials or key need operator action; do not retry unchanged', '1': 'other failure' },
@@ -105,7 +105,7 @@ async function main() {
   const options: Record<string, string> = {};
   let schemaName: string | undefined;
   if (command === 'schema' && argv[0] && !argv[0].startsWith('--')) schemaName = argv.shift();
-  const allowed = command === 'init' ? ['--directory', '--output'] : command === 'token' ? ['--token-file', '--tenant', '--keys', '--permissions', '--output'] : command === 'probe' ? ['--key', '--tenant', '--record', '--output'] : ['encrypt', 'decrypt', 'config-check'].includes(command) ? ['--input', '--output'] : ['--output'];
+  const allowed = command === 'init' ? ['--directory', '--output'] : command === 'token' ? ['--token-file', '--tenant', '--keys', '--permissions', '--output'] : command === 'probe' ? ['--key', '--tenant', '--record', '--output'] : command === 'decrypt' ? ['--input', '--output', '--envelope'] : ['encrypt', 'config-check'].includes(command) ? ['--input', '--output'] : ['--output'];
   while (argv.length) {
     const flag = argv.shift()!;
     if (!allowed.includes(flag) || Object.hasOwn(options, flag)) fail('Unknown or repeated option. Run --help.');
@@ -135,7 +135,13 @@ async function main() {
       } else if (command === 'probe') {
         result = await probe(client, options);
       } else {
-        const input = await readInput(options['--input']);
+        let input = await readInput(options['--input']);
+        if (options['--envelope']) {
+          const stored = await readInput(options['--envelope']) as Record<string, unknown> | null;
+          const envelope = stored && typeof stored === 'object' && 'envelope' in stored ? stored.envelope : stored;
+          if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).join() !== 'context') fail('With --envelope, input must be exactly {"context": {...}}.');
+          input = { envelope, context: (input as { context: unknown }).context };
+        }
         result = command === 'encrypt' ? { envelope: await client.encrypt(input as never) } : { plaintext: await client.decrypt(input as never) };
       }
       break;
