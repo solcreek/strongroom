@@ -9,7 +9,11 @@ export class StrongroomError extends Error {
   }
   toJSON() { return { code: this.code, message: this.message, status: this.status, retryable: this.retryable, ...(this.requestId ? { requestId: this.requestId } : {}), ...(this.path ? { path: this.path } : {}) }; }
 }
-export interface ClientOptions { url: string; token: string; timeoutMs?: number; fetch?: typeof fetch }
+export interface ClientOptions {
+  url: string; token: string; timeoutMs?: number; fetch?: typeof fetch;
+  // Google ID token for a Cloud Run service with invoker IAM; sent as X-Serverless-Authorization so Authorization stays the Strongroom bearer.
+  cloudRunIdToken?: string;
+}
 export interface RequestOptions { signal?: AbortSignal }
 export function serviceUrl(value: string): URL {
   let url: URL;
@@ -21,11 +25,15 @@ export function serviceUrl(value: string): URL {
   return url;
 }
 export class Strongroom {
-  #url: URL; #token: string; #fetch: typeof fetch; #timeout: number;
+  #url: URL; #token: string; #fetch: typeof fetch; #timeout: number; #platform: Record<string, string> = {};
   constructor(options: ClientOptions) {
     this.#url = serviceUrl(options.url);
     if (!/^[A-Za-z0-9_-]{32,256}$/.test(options.token)) throw new StrongroomError('INVALID_CONFIG', 'Set a valid Strongroom bearer token.');
     this.#token = options.token; this.#fetch = options.fetch ?? fetch; this.#timeout = options.timeoutMs ?? 20000;
+    if (options.cloudRunIdToken !== undefined) {
+      if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(options.cloudRunIdToken)) throw new StrongroomError('INVALID_CONFIG', 'cloudRunIdToken must be a Google ID token (JWT).');
+      this.#platform = { 'x-serverless-authorization': `Bearer ${options.cloudRunIdToken}` };
+    }
     if (!Number.isInteger(this.#timeout) || this.#timeout < 1 || this.#timeout > 120000) throw new StrongroomError('INVALID_CONFIG', 'timeoutMs must be between 1 and 120000.');
   }
   async #request(path: string, input?: unknown, options: RequestOptions = {}): Promise<any> {
@@ -33,7 +41,7 @@ export class Strongroom {
     const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout;
     try {
       const response = await this.#fetch(new URL(path, this.#url), { method: input === undefined ? 'GET' : 'POST',
-        headers: { authorization: `Bearer ${this.#token}`, ...(input === undefined ? {} : { 'content-type': 'application/json' }) },
+        headers: { ...this.#platform, authorization: `Bearer ${this.#token}`, ...(input === undefined ? {} : { 'content-type': 'application/json' }) },
         ...(input === undefined ? {} : { body: JSON.stringify(input) }), redirect: 'manual', signal });
       const reader = response.body?.getReader();
       if (!reader) throw new StrongroomError('INVALID_RESPONSE', 'Service returned an invalid response.', response.status);
@@ -48,7 +56,11 @@ export class Strongroom {
       for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
       let result: any;
       try { result = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
-      catch { throw new StrongroomError('INVALID_RESPONSE', 'Service returned invalid JSON.', response.status); }
+      catch {
+        // Not Strongroom's JSON: a platform or proxy in front of it (Cloud Run IAM, an ALB, a WAF) answered instead.
+        if ([401, 403, 404, 407].includes(response.status)) throw new StrongroomError('GATEWAY_REJECTED', `A gateway in front of Strongroom rejected the request (HTTP ${response.status}). For Cloud Run with invoker IAM, supply a Google ID token (STRONGROOM_CLOUD_RUN_ID_TOKEN); otherwise check STRONGROOM_URL.`, response.status);
+        throw new StrongroomError('INVALID_RESPONSE', 'Service returned invalid JSON.', response.status);
+      }
       if (!response.ok) {
         const e = result?.error;
         if (typeof e?.code !== 'string' || typeof e?.message !== 'string' || typeof e?.retryable !== 'boolean') throw new StrongroomError('INVALID_RESPONSE', 'Service returned an invalid error.', response.status);

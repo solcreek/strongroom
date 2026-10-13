@@ -53,3 +53,15 @@ test('SDK cancellation and timeouts are distinguishable without automatic retrie
     assert.equal(calls, 2);
   } finally { clearTimeout(keepAlive); }
 });
+test('SDK sends a Cloud Run ID token separately and names gateway rejections', async () => {
+  const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln';
+  let seen;
+  const client = new Strongroom({ url: 'https://run.example', token: 'a'.repeat(43), cloudRunIdToken: jwt, fetch: async (url, init) => { seen = init.headers; return new Response(JSON.stringify({ status: 'ready' })); } });
+  await client.ready();
+  assert.equal(seen['x-serverless-authorization'], `Bearer ${jwt}`); assert.equal(seen.authorization, `Bearer ${'a'.repeat(43)}`);
+  assert.throws(() => new Strongroom({ url: 'https://run.example', token: 'a'.repeat(43), cloudRunIdToken: 'not-a-jwt' }), { code: 'INVALID_CONFIG' });
+  for (const [status, code] of [[403, 'GATEWAY_REJECTED'], [401, 'GATEWAY_REJECTED'], [404, 'GATEWAY_REJECTED'], [502, 'INVALID_RESPONSE'], [200, 'INVALID_RESPONSE']]) {
+    const gated = new Strongroom({ url: 'https://run.example', token: 'a'.repeat(43), fetch: async () => new Response('<html>Error: Forbidden</html>', { status, headers: { 'content-type': 'text/html' } }) });
+    await assert.rejects(gated.ready(), e => e.code === code && e.status === status && e.retryable === false && !e.message.includes('<html>'));
+  }
+});

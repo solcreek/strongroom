@@ -20,7 +20,7 @@ const help = {
     token: 'Write a new random bearer token to a NEW --token-file FILE (mode 0600); return its SHA-256 digest, and a principal entry when --tenant and --keys are given.',
   },
   flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'token: principal tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--key': 'probe: key reference', '--envelope': 'decrypt: file holding {envelope} or an envelope', '--record': 'probe: recordId (default strongroom-probe)', '--help': 'This JSON document', '--version': 'JSON version' },
-  environment: ['STRONGROOM_URL', 'STRONGROOM_TOKEN', 'STRONGROOM_TOKEN_FILE'],
+  environment: ['STRONGROOM_URL', 'STRONGROOM_TOKEN', 'STRONGROOM_TOKEN_FILE', 'STRONGROOM_CLOUD_RUN_ID_TOKEN (Cloud Run invoker IAM, e.g. $(gcloud auth print-identity-token))'],
   output: { success: 'One JSON object on stdout, or --output FILE.', error: 'One JSON error object on stderr. No stack traces.' },
   exitCodes: { '0': 'success', '2': 'input/configuration error', '3': 'authentication/authorization error', '4': 'request/decryption rejected', '5': 'retryable network/provider error', '6': 'service KMS credentials or key need operator action; do not retry unchanged', '1': 'other failure' },
   limits: { maxInputBytes: 524288 },
@@ -129,7 +129,7 @@ async function main() {
     case 'encrypt': case 'decrypt': case 'doctor': case 'probe': {
       let token = process.env.STRONGROOM_TOKEN;
       if (!token && process.env.STRONGROOM_TOKEN_FILE) token = (await readFile(process.env.STRONGROOM_TOKEN_FILE, 'utf8')).trim();
-      const client = new Strongroom({ url: process.env.STRONGROOM_URL ?? '', token: token ?? '' });
+      const client = new Strongroom({ url: process.env.STRONGROOM_URL ?? '', token: token ?? '', ...(process.env.STRONGROOM_CLOUD_RUN_ID_TOKEN ? { cloudRunIdToken: process.env.STRONGROOM_CLOUD_RUN_ID_TOKEN.trim() } : {}) });
       if (command === 'doctor') {
         await client.ready(); const c = await client.capabilities(); result = { ready: true, apiVersion: c.apiVersion, checks: ['configuration', 'api-version'], unchecked: ['token-permissions', 'kms-connectivity'], next: 'strongroom probe --key KEY --tenant TENANT' };
       } else if (command === 'probe') {

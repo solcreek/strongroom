@@ -14,7 +14,7 @@ strongroom schema decrypt
 
 During development substitute `node packages/strongroom/dist/cli.js` for `strongroom`. The npm alpha is not published automatically. Install a local tarball using `npm pack ./packages/strongroom --pack-destination .cache`, then install that tarball into your consuming project.
 
-The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FILE`. Input is JSON from stdin or `--input FILE`; secrets are never CLI flags. No interactive prompt, login redirect, or automatic browser launch occurs. Responses are one JSON value on stdout. Errors are one JSON object on stderr, with a stable code, status and retryability. `--output FILE` creates a private file and refuses to overwrite any existing path, including a symlink.
+The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FILE`. For a Cloud Run service with invoker IAM, also set `STRONGROOM_CLOUD_RUN_ID_TOKEN=$(gcloud auth print-identity-token)` (SDK: `cloudRunIdToken`); it travels in `X-Serverless-Authorization` so `Authorization` stays the Strongroom bearer. A non-JSON 401/403/404 from a platform in front of the service (Cloud Run IAM, a load balancer, a WAF) surfaces as `GATEWAY_REJECTED`, exit 3. Input is JSON from stdin or `--input FILE`; secrets are never CLI flags. No interactive prompt, login redirect, or automatic browser launch occurs. Responses are one JSON value on stdout. Errors are one JSON object on stderr, with a stable code, status and retryability. `--output FILE` creates a private file and refuses to overwrite any existing path, including a symlink.
 
 ```json
 {"error":{"code":"FORBIDDEN","message":"Tenant or key is not permitted.","status":403,"retryable":false,"requestId":"server-generated-id"}}
