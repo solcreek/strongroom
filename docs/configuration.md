@@ -22,7 +22,7 @@ Store one JSON object in the secret environment binding `STRONGROOM_CONFIG`. Kee
 }
 ```
 
-Replace placeholders before use. Put the file under an ignored private directory such as `.strongroom/production.json`, mode 0600. Run `node packages/strongroom/dist/cli.js config-check --input .strongroom/production.json`. Diagnostics describe expected fields without echoing supplied values; validation makes no KMS calls.
+Replace placeholders before use. Put the file under an ignored private directory such as `.strongroom/production.json`, mode 0600. Run `node packages/strongroom/dist/cli.js config-check --input .strongroom/production.json`. Failures exit 2 with `error.path` naming the field (for example `$.keys.primary.keyId`) and a message stating the rule; supplied values are never echoed. Validation makes no KMS calls.
 
 The SDK/CLI receives the original random token via `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FILE`, plus `STRONGROOM_URL`. The service receives only its digest. Generate token material without displaying it:
 

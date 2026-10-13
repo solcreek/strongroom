@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { Strongroom, StrongroomError } from './client.ts';
 import { openapi, schemas, capabilities } from '../../../service/contract.ts';
-import { parseConfig } from '../../../service/config.ts';
+import { ConfigError, parseConfig } from '../../../service/config.ts';
 
 const help = {
   name: 'strongroom', version: capabilities.version, nonInteractive: true,
@@ -82,7 +82,7 @@ async function main() {
       const serialized = options['--input'] ? JSON.stringify(await readInput(options['--input'])) : process.env.STRONGROOM_CONFIG;
       let c;
       try { c = parseConfig({ ...process.env, STRONGROOM_CONFIG: serialized }); }
-      catch (error) { throw new StrongroomError('INVALID_CONFIG', error instanceof Error ? error.message : 'Configuration is invalid.'); }
+      catch (error) { throw new StrongroomError('INVALID_CONFIG', error instanceof Error ? error.message : 'Configuration is invalid.', 0, false, undefined, error instanceof ConfigError ? error.path : undefined); }
       result = { valid: true, keyCount: Object.keys(c.keys).length, principalCount: c.principals.length, providers: [...new Set(Object.values(c.keys).map(v => v.provider))] }; break;
     }
     case 'encrypt': case 'decrypt': case 'doctor': {

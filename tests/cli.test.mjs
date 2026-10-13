@@ -40,6 +40,9 @@ test('CLI init generates private random credentials, refuses overwrite and keeps
     assert.equal((await runCli(['schema', '--output', output])).stdout, '');
     assert.equal((await stat(output)).mode & 0o777, 0o600);
     assert.equal((await runCli(['schema', '--output', output])).code, 2);
+    await writeFile(join(parent, 'principal.json'), JSON.stringify({ ...config, principals: [{ ...config.principals[0], permissions: ['admin'] }] }));
+    const diagnosed = await runCli(['config-check', '--input', join(parent, 'principal.json')], { env: { STRONGROOM_ALLOW_LOCAL: 'true' } });
+    assert.equal(diagnosed.code, 2); assert.equal(JSON.parse(diagnosed.stderr).error.path, '$.principals[0].permissions');
     await writeFile(join(parent, 'bad.json'), 'broken');
     assert.equal((await runCli(['config-check', '--input', join(parent, 'bad.json')])).code, 2);
   } finally { await rm(parent, { recursive: true, force: true }); }

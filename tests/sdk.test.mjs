@@ -12,6 +12,7 @@ test('SDK roundtrip against actual Rust Wasm and HTTP contract', async () => {
   await assert.rejects(client.decrypt({ envelope, context: { ...context, purpose: 'wrong' } }), e => {
     assert.ok(e instanceof StrongroomError); assert.equal(e.code, 'DECRYPT_FAILED'); assert.equal(e.status, 400); assert.equal(e.retryable, false); assert.ok(e.requestId); return true;
   });
+  await assert.rejects(client.encrypt({ key: 'primary', context: { ...context, recordId: '' }, plaintext: 'x' }), e => e.path === '$.context.recordId' && e.toJSON().path === '$.context.recordId');
   const restricted = new Strongroom({ ...options, token: encryptToken, fetch: (url, init) => app.fetch(new Request(url, init)) });
   await assert.rejects(restricted.decrypt({ envelope, context }), { status: 403, code: 'FORBIDDEN' });
 });
