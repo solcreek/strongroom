@@ -64,7 +64,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Dockerfile build
         uses: docker/build-push-action@v6
         with:
