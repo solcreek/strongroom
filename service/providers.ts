@@ -32,6 +32,21 @@ export const classifyOAuth: Classify = ({ status, code }) =>
 // Vault/OpenBao: the status carries the meaning, except a missing key or a version below min_decryption_version (400).
 export const classifyTransit = (op: 'encrypt' | 'decrypt'): Classify => ({ status, code }) =>
   status === 401 || status === 403 ? accessDenied() : status === 404 || code === 'key_not_found' || code === 'version_disallowed' ? keyUnavailable() : op === 'decrypt' && [400, 422].includes(status) ? decryptFailed() : unavailable();
+// Caches a short-lived credential and coalesces concurrent loads; `drop` forgets it after an upstream rejection,
+// so a revoked credential is not reused until its nominal expiry.
+function credentialCache<T>(load: () => Promise<{ value: T; until: number }>) {
+  let cached: { value: T; until: number } | undefined, inflight: Promise<{ value: T; until: number }> | undefined;
+  return {
+    async get(): Promise<T> {
+      if (cached && Date.now() < cached.until) return cached.value;
+      inflight ??= load().finally(() => { inflight = undefined; });
+      cached = await inflight; return cached.value;
+    },
+    async guard<R>(run: () => Promise<R>): Promise<R> {
+      try { return await run(); } catch (e) { if (e instanceof ServiceError && e.code === 'KMS_ACCESS_DENIED') cached = undefined; throw e; }
+    },
+  };
+}
 export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch): KeyProvider {
   const config = supplied;
   if (config.provider === 'local') {
@@ -69,32 +84,21 @@ export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch): Key
   }
   if (config.provider === 'gcp') {
     const tokenRequest = gcpTokenSource(config, fetcher);
-    let cached: { value: string; until: number } | undefined;
-    let inflight: Promise<string> | undefined;
-    const token = async (): Promise<string> => {
-      if (cached && Date.now() < cached.until) return cached.value;
-      if (inflight) return inflight;
-      inflight = (async () => {
-        const result = await tokenRequest();
-        if (typeof result.access_token !== 'string' || result.access_token.length < 1 || !Number.isFinite(result.expires_in) || result.expires_in <= 60) throw malformed();
-        cached = { value: result.access_token, until: Date.now() + Math.min(result.expires_in - 60, 3540) * 1000 };
-        return cached.value;
-      })();
-      try { return await inflight; } finally { inflight = undefined; }
-    }
+    const tokens = credentialCache(async () => {
+      const result = await tokenRequest();
+      if (typeof result.access_token !== 'string' || result.access_token.length < 1 || !Number.isFinite(result.expires_in) || result.expires_in <= 60) throw malformed();
+      return { value: result.access_token as string, until: Date.now() + Math.min(result.expires_in - 60, 3540) * 1000 };
+    });
     const call = async (op: 'encrypt' | 'decrypt', bytes: Uint8Array, aad: Uint8Array) => {
       const field = op === 'encrypt' ? 'plaintext' : 'ciphertext';
-      const headers: Record<string, string> = { authorization: `Bearer ${await token()}`, 'content-type': 'application/json' };
+      const headers: Record<string, string> = { authorization: `Bearer ${await tokens.get()}`, 'content-type': 'application/json' };
       if ('authorizedUser' in config && config.authorizedUser.quotaProject) headers['x-goog-user-project'] = config.authorizedUser.quotaProject;
       const r = await kmsJson(fetcher, `https://cloudkms.googleapis.com/v1/${config.keyId}:${op}`, { method: 'POST', headers,
         body: JSON.stringify({ [field]: base64(bytes), [`${field}Crc32c`]: crc32c(bytes), additionalAuthenticatedData: base64(aad), additionalAuthenticatedDataCrc32c: crc32c(aad) }),
       }, classifyGcp(op));
       return r;
     }
-    // An expired or revoked cached token must not stick for its nominal lifetime.
-    const guard = async <T>(run: () => Promise<T>): Promise<T> => {
-      try { return await run(); } catch (e) { if (e instanceof ServiceError && e.code === 'KMS_ACCESS_DENIED') cached = undefined; throw e; }
-    };
+    const guard = tokens.guard;
     return {
       wrap: (key, aad) => guard(async () => {
         const r = await call('encrypt', key, aad);
