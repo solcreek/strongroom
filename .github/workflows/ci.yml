@@ -32,3 +32,14 @@ jobs:
         with:
           name: coverage
           path: coverage
+  iac:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.12.6
+      - name: Format and validate deployment modules
+        run: |
+          tofu fmt -check -recursive deploy/terraform
+          for m in deploy/terraform/*/; do tofu -chdir="$m" init -backend=false -input=false && tofu -chdir="$m" validate; done
