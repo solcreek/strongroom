@@ -1,0 +1,215 @@
+{
+  "provider": "aws",
+  "verified": "2026-10-13",
+  "source": "node scripts/test-live.mjs --record",
+  "scenarios": [
+    {
+      "name": "decrypt-wrong-context",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "InvalidCiphertextException"
+        }
+      },
+      "expect": {
+        "code": "DECRYPT_FAILED",
+        "status": 400,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-malformed-ciphertext",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "InvalidCiphertextException"
+        }
+      },
+      "expect": {
+        "code": "DECRYPT_FAILED",
+        "status": 400,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-ciphertext-from-other-key",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "IncorrectKeyException"
+        }
+      },
+      "expect": {
+        "code": "DECRYPT_FAILED",
+        "status": 400,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-ciphertext-from-other-key-without-grant",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "AccessDeniedException"
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "encrypt-key-not-granted",
+      "operation": "wrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "AccessDeniedException"
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-key-not-granted",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "AccessDeniedException"
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "encrypt-key-not-found",
+      "operation": "wrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "NotFoundException"
+        }
+      },
+      "expect": {
+        "code": "KMS_KEY_UNAVAILABLE",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "encrypt-foreign-account-key",
+      "operation": "wrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "AccessDeniedException"
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "unknown-access-key",
+      "operation": "wrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "UnrecognizedClientException"
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "wrong-secret-key",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "InvalidSignatureException"
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "invalid-session-token",
+      "operation": "wrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "UnrecognizedClientException"
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-disabled-key",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "DisabledException"
+        }
+      },
+      "expect": {
+        "code": "KMS_KEY_UNAVAILABLE",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-pending-deletion-key",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "DisabledException"
+        }
+      },
+      "expect": {
+        "code": "KMS_KEY_UNAVAILABLE",
+        "status": 502,
+        "retryable": false
+      }
+    }
+  ]
+}

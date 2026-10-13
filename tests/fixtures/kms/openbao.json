@@ -1,0 +1,205 @@
+{
+  "provider": "openbao",
+  "verified": "2026-10-13",
+  "source": "node scripts/test-live.mjs --record",
+  "scenarios": [
+    {
+      "name": "decrypt-wrong-context",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "errors": [
+            "<redacted>"
+          ]
+        }
+      },
+      "expect": {
+        "code": "DECRYPT_FAILED",
+        "status": 400,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-malformed-ciphertext",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "errors": [
+            "<redacted>"
+          ]
+        }
+      },
+      "expect": {
+        "code": "DECRYPT_FAILED",
+        "status": 400,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-ciphertext-from-other-key",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "errors": [
+            "<redacted>"
+          ]
+        }
+      },
+      "expect": {
+        "code": "DECRYPT_FAILED",
+        "status": 400,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-future-key-version",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "errors": [
+            "<redacted>"
+          ]
+        }
+      },
+      "expect": {
+        "code": "DECRYPT_FAILED",
+        "status": 400,
+        "retryable": false
+      }
+    },
+    {
+      "name": "encrypt-key-not-granted",
+      "operation": "wrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 403,
+        "body": {
+          "errors": [
+            "<redacted>"
+          ]
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-key-not-granted",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 403,
+        "body": {
+          "errors": [
+            "<redacted>"
+          ]
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-key-not-found",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "errors": [
+            "encryption key not found"
+          ]
+        }
+      },
+      "expect": {
+        "code": "KMS_KEY_UNAVAILABLE",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "revoked-token",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 403,
+        "body": {
+          "errors": [
+            "<redacted>"
+          ]
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "invalid-token",
+      "operation": "wrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 403,
+        "body": {
+          "errors": [
+            "<redacted>"
+          ]
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "decrypt-version-below-minimum",
+      "operation": "unwrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "errors": [
+            "ciphertext or signature version is disallowed by policy (too old)"
+          ]
+        }
+      },
+      "expect": {
+        "code": "KMS_KEY_UNAVAILABLE",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
+      "name": "sealed",
+      "operation": "wrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 503,
+        "body": {
+          "errors": [
+            "<redacted>"
+          ]
+        }
+      },
+      "expect": {
+        "code": "KMS_UNAVAILABLE",
+        "status": 503,
+        "retryable": true
+      }
+    }
+  ]
+}

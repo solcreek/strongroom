@@ -103,7 +103,7 @@ Use `vault` in place of `bao` for Vault. Tokens must be renewed or replaced exte
 
 ## Provider error mapping
 
-Upstream failures map to four stable codes; upstream messages are never forwarded.
+Upstream failures map to four stable codes; upstream messages are never forwarded. The mapping is pinned by live-recorded fixtures in `tests/fixtures/kms/` ([testing](testing.md)).
 
 | Code | HTTP | Retryable | Upstream evidence |
 | --- | --- | --- | --- |

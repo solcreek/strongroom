@@ -74,10 +74,11 @@ npm run build:host       # 只重建 HTTP host 與 SDK/CLI
 npm run deploy:check     # Wrangler dry-run，不部署
 npm run test:package     # 真正打包、安裝並驗證 SDK types 與 CLI
 TRANSIT_BIN=/path/to/bao npm run test:transit
+npm run test:live        # 真實 AWS／GCP／OpenBao conformance 與 fixture drift 檢查（見 docs/testing.md）
 ```
 
 Coverage gate：共享 service 與 SDK／CLI 的 lines、statements、functions ≥90%，branches ≥80%。Rust 使用獨立測試；Workers／Node host 用實際 runtime 與 loopback HTTP 驗證，不灌入共享程式碼的 coverage 百分比。
 
-本機已驗證 OpenBao 2.7.1 的真實 Transit roundtrip、context 拒絕、金鑰輪替與 token 撤銷。AWS／GCP 目前是協定測試，尚未用雲端帳戶驗證。Docker daemon 在目前環境未啟動，因此本機未完成 image build；CI 會執行 Docker build。
+2026-10-13 已用真實帳戶驗證 AWS KMS（最小權限 IAM user）與 Google Cloud KMS（service account、ADC），以及本機 OpenBao 2.7.1：roundtrip、context 拒絕、權限拒絕、金鑰不存在／停用、憑證錯誤等情境都經過 workerd 與 Node host。真實錯誤回應記錄為 `tests/fixtures/kms/`，離線測試逐一重播；`npm run test:live` 會偵測 provider 行為漂移。見 [KMS 測試](docs/testing.md)。Docker daemon 在目前環境未啟動，因此本機未完成 image build；CI 會執行 Docker build。
 
-詳細文件：[架構](docs/architecture.md)、[設定](docs/configuration.md)、[部署](docs/deployment.md)、[安全邊界](docs/security.md)、[Agent 使用指南](docs/agents.md)。歷史 POC 保留在 `poc/` 與 [benchmark 報告](results/REPORT.md)，其固定 mock key 與密文格式不相容於正式核心。
+詳細文件：[架構](docs/architecture.md)、[設定](docs/configuration.md)、[KMS 測試](docs/testing.md)、[部署](docs/deployment.md)、[安全邊界](docs/security.md)、[Agent 使用指南](docs/agents.md)。歷史 POC 保留在 `poc/` 與 [benchmark 報告](results/REPORT.md)，其固定 mock key 與密文格式不相容於正式核心。

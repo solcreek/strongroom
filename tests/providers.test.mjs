@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createProvider, classifyAws, classifyGcp, classifyOAuth, classifyTransit } from '../service/providers.ts';
 import { parseConfig } from '../service/config.ts';
+import { readFile } from 'node:fs/promises';
 import { kmsJson, upstreamCode } from '../service/transport.ts';
 import { base64, unbase64, crc32c, utf8 } from '../service/encoding.ts';
 import { config, env } from './helpers.mjs';
@@ -92,6 +93,39 @@ test('upstream failures, redirects, malformed or oversized responses never expos
   assert.equal(upstreamCode({ __type: 'com.amazonaws.kms#DisabledException' }), 'DisabledException');
 });
 
+// Replays every live-recorded upstream failure (tests/fixtures/kms, produced by scripts/test-live.mjs --record)
+// through the real adapter, so the error contract is pinned to observed provider behaviour without network access.
+const fixtures = await Promise.all(['aws', 'gcp', 'openbao'].map(async p => JSON.parse(await readFile(new URL(`./fixtures/kms/${p}.json`, import.meta.url), 'utf8'))));
+const replayConfig = {
+  aws: () => aws,
+  gcp: () => ({ provider: 'gcp', keyId: 'projects/p/locations/global/keyRings/r/cryptoKeys/k', authorizedUser: { clientId: 'id', clientSecret: 'secret', refreshToken: 'refresh' } }),
+  openbao: () => ({ ...transit, provider: 'openbao' }),
+};
+const replayWrapped = { aws: 'opaque', gcp: base64(dek), openbao: 'vault:v1:opaque' };
+for (const fixture of fixtures) {
+  test(`${fixture.provider} replays ${fixture.scenarios.length} live-recorded failures (verified ${fixture.verified})`, async () => {
+    assert.ok(fixture.scenarios.length >= 8);
+    for (const s of fixture.scenarios) {
+      const upstream = () => new Response(s.upstream.body === null ? null : JSON.stringify(s.upstream.body), { status: s.upstream.status });
+      const p = createProvider(replayConfig[fixture.provider](), async url => {
+        if (String(url.url ?? url).includes('oauth2')) return s.upstream.endpoint === 'token' ? upstream() : response({ access_token: 'oauth-token', expires_in: 3600 });
+        assert.notEqual(s.upstream.endpoint, 'token', `${s.name}: KMS must not be called after a token failure`);
+        return upstream();
+      });
+      const run = s.operation === 'wrap' ? p.wrap(dek, aad) : p.unwrap(replayWrapped[fixture.provider], aad);
+      await assert.rejects(run, e => {
+        assert.deepEqual({ code: e.code, status: e.status, retryable: e.retryable }, s.expect, s.name);
+        assert.equal(e.upstream.status, s.upstream.status, s.name);
+        assert.equal(e.upstream.code, upstreamCode(s.upstream.body), s.name);
+        return true;
+      });
+    }
+  });
+}
+test('every non-retryable KMS code is reachable from a recorded fixture', () => {
+  const seen = new Set(fixtures.flatMap(f => f.scenarios.map(s => s.expect.code)));
+  for (const code of ['DECRYPT_FAILED', 'KMS_ACCESS_DENIED', 'KMS_KEY_UNAVAILABLE', 'KMS_UNAVAILABLE']) assert.ok(seen.has(code), code);
+});
 test('classifiers cover statuses no live run can safely provoke: throttling, 5xx and unknown codes stay retryable', () => {
   for (const op of ['Encrypt', 'Decrypt']) for (const u of [{ status: 400, code: 'ThrottlingException' }, { status: 500, code: 'KMSInternalException' }, { status: 503, code: 'DependencyTimeoutException' }, { status: 400, code: 'SomethingNew' }])
     assert.equal(classifyAws(op)(u).code, 'KMS_UNAVAILABLE');
