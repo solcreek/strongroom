@@ -13,7 +13,7 @@ test('AWS signs requests, pins immutable key ARN and sends identical encryption 
   const requests = [];
   const p = createProvider(aws, async (request, init) => {
     requests.push(request); const body = await request.json();
-    assert.equal(init.redirect, 'error'); assert.ok(init.signal);
+    assert.equal(init.redirect, 'manual'); assert.ok(init.signal);
     assert.match(request.headers.get('authorization'), /^AWS4-HMAC-SHA256 Credential=TESTACCESSKEY\//);
     assert.equal(request.headers.get('x-amz-security-token'), 'test-session');
     assert.equal(body.KeyId, aws.keyId); assert.equal(body.EncryptionContext.strongroom, base64(aad));
@@ -67,11 +67,13 @@ test('GCP uses signed OAuth assertion, coalesces token requests, validates CRC32
   await assert.rejects(p.unwrap('!bad', aad), { code: 'DECRYPT_FAILED' });
 });
 test('provider configurations reject aliases, URL credentials, insecure remote URLs and unknown fields', () => {
-  for (const k of [aws, transit, { ...transit, provider: 'openbao' }]) {
+  const gcp = { provider: 'gcp', keyId: 'projects/test/locations/global/keyRings/test/cryptoKeys/strongroom', serviceAccount: { clientEmail: 'test@example.com', privateKey: '-----BEGIN PRIVATE KEY-----\nTEST\n-----END PRIVATE KEY-----' } };
+  for (const k of [aws, transit, { ...transit, provider: 'openbao' }, gcp]) {
     assert.ok(parseConfig({ ...env, STRONGROOM_CONFIG: JSON.stringify({ ...config, keys: { primary: k, restricted: k } }) }));
   }
   for (const k of [{ ...aws, keyId: 'alias/test' }, { ...aws, region: 'us-west-2' }, { ...transit, url: 'http://remote.example' },
-    { ...transit, url: 'https://user:password@vault.example' }, { ...transit, mount: '../escape' }, { ...transit, url: 'https://vault.example/?x=1' }, { ...transit, unknown: 1 }]) {
+    { ...transit, url: 'https://user:password@vault.example' }, { ...transit, mount: '../escape' }, { ...transit, url: 'https://vault.example/?x=1' }, { ...transit, unknown: 1 },
+    { ...gcp, keyId: 'invalid' }, { ...gcp, serviceAccount: { clientEmail: 'test', privateKey: 'invalid' } }]) {
     assert.throws(() => parseConfig({ ...env, STRONGROOM_CONFIG: JSON.stringify({ ...config, keys: { primary: k, restricted: k } }) }));
   }
 });

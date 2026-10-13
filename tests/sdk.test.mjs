@@ -24,7 +24,7 @@ test('SDK rejects unsafe origins and bad credentials before sending requests', (
 test('SDK forbids redirects, bounds responses, sanitizes transport failures and exposes retryability', async () => {
   const broken = [new Response('not json'), new Response(null), new Response('x'.repeat(524289)), new Response('{}', { status: 500 }), new Response('{}')];
   for (const response of broken) {
-    const client = new Strongroom({ ...options, fetch: async (_, init) => { assert.equal(init.redirect, 'error'); return response; } });
+    const client = new Strongroom({ ...options, fetch: async (_, init) => { assert.equal(init.redirect, 'manual'); return response; } });
     await assert.rejects(client.encrypt({}), { code: 'INVALID_RESPONSE' });
   }
   const offline = new Strongroom({ ...options, fetch: async () => { throw new Error('sensitive-provider-details'); } });

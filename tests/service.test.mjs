@@ -4,6 +4,7 @@ import { appWith, env, config, context, token, tenantBToken, encryptToken, reque
 import { parseConfig } from '../service/config.ts';
 import { equalHash, crc32c, utf8 } from '../service/encoding.ts';
 import { errorResponse } from '../service/app.ts';
+import { kmsJson } from '../service/transport.ts';
 
 test('Wasm HTTP roundtrips preserve empty, Unicode, and maximum UTF-8 text; fresh envelopes', async () => {
   const app = appWith();
@@ -88,4 +89,33 @@ test('provider errors are sanitized and never return envelope or plaintext', asy
   const body = await response.text(); assert.ok(!body.includes('fake-user-api-key')); assert.ok(!body.includes('upstream-secret'));
   assert.equal(JSON.parse(body).error.retryable, true);
   assert.equal((await errorResponse(new Error('secret')).json()).error.code, 'INTERNAL_ERROR');
+});
+test('request and provider deadlines fail closed', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = kmsJson(async (_url, init) => new Promise((_, reject) => {
+    init.signal.addEventListener('abort', () => reject(new Error('secret transport detail')), { once: true });
+  }), 'https://example.com');
+  t.mock.timers.tick(8000);
+  await assert.rejects(pending, { code: 'KMS_UNAVAILABLE' });
+  t.mock.timers.reset();
+
+  const original = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (fn, delay, ...args) => {
+    if (delay === 8000) return original(fn, 1, ...args);
+    return original(fn, delay, ...args);
+  });
+  const stream = new ReadableStream({ start() {} });
+  const app = appWith();
+  const response = await app.fetch(request('/v1/encrypt', {}, token, { body: stream, duplex: 'half' }));
+  assert.equal(response.status, 408); assert.equal((await response.json()).error.code, 'REQUEST_TIMEOUT');
+});
+test('unauthorized and malformed envelopes never reach KMS', async () => {
+  let calls = 0;
+  const provider = { provider: 'vault', url: 'https://vault.example', mount: 'transit', keyName: 'test', token: 'test' };
+  const app = appWith({ STRONGROOM_CONFIG: JSON.stringify({ ...config, keys: { primary: provider, restricted: provider } }) }, async () => { calls++; throw new Error('unexpected'); });
+  const envelope = await encrypt(appWith());
+  await app.fetch(request('/v1/decrypt', { envelope, context }, tenantBToken));
+  await app.fetch(request('/v1/decrypt', { envelope: { ...envelope, version: 2 }, context }));
+  await app.fetch(request('/v1/decrypt', { envelope, context }, encryptToken));
+  assert.equal(calls, 0);
 });

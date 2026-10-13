@@ -11,13 +11,14 @@ export interface Bindings { STRONGROOM_CONFIG?: string; STRONGROOM_ALLOW_LOCAL?:
 export const keyPattern = /^[A-Za-z0-9_-]{1,64}$/;
 export function object(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 export function fields(value: unknown, required: string[], optional: string[] = []): asserts value is Record<string, unknown> {
-  if (!object(value) || required.some(k => !Object.hasOwn(value, k)) || Object.keys(value).some(k => !required.includes(k) && !optional.includes(k))) throw new Error('Invalid fields');
+  if (!object(value) || required.some(k => !Object.hasOwn(value, k)) || Object.keys(value).some(k => !required.includes(k) && !optional.includes(k))) throw new Error(`Invalid fields. Required: ${required.join(', ')}. Optional: ${optional.join(', ') || 'none'}.`);
 }
 export function text(value: unknown, max = 8192): value is string {
   return typeof value === 'string' && value.length > 0 && value.isWellFormed() && utf8.encode(value).length <= max;
 }
 export function parseConfig(env: Bindings): Config {
-  const config: unknown = JSON.parse(env.STRONGROOM_CONFIG ?? 'null');
+  let config: unknown;
+  try { config = JSON.parse(env.STRONGROOM_CONFIG ?? 'null'); } catch { throw new Error('STRONGROOM_CONFIG must contain valid JSON.'); }
   fields(config, ['keys', 'principals']);
   if (!object(config.keys) || !Object.keys(config.keys).length || Object.keys(config.keys).length > 100) throw new Error('Invalid keys');
   for (const [alias, k] of Object.entries(config.keys)) {
