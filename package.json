@@ -25,6 +25,7 @@
     "deploy:check": "wrangler deploy --config wrangler.jsonc --dry-run --outdir dist/deploy",
     "start": "node dist/server.js",
     "test:transit": "node scripts/test-transit.mjs",
+    "test:live": "node scripts/test-live.mjs",
     "test:package": "node scripts/test-package.mjs",
     "test:container": "node scripts/test-container.mjs"
   },

@@ -21,7 +21,10 @@ jobs:
       - run: npm run deploy:check
       - run: npm run test:package
       - name: Real OpenBao Transit integration
-        run: TRANSIT_BIN="$(node scripts/install-transit.mjs)" npm run test:transit
+        run: |
+          export TRANSIT_BIN="$(node scripts/install-transit.mjs)"
+          npm run test:transit
+          npm run test:live -- --provider openbao
       - run: docker build -t strongroom:ci .
       - run: npm run test:container
       - uses: actions/upload-artifact@v4

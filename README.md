@@ -74,10 +74,11 @@ npm run build:host       # rebuild only the HTTP host and SDK/CLI
 npm run deploy:check     # Wrangler dry-run, no deployment
 npm run test:package     # really pack, install and verify the SDK types and CLI
 TRANSIT_BIN=/path/to/bao npm run test:transit
+npm run test:live        # real AWS/GCP/OpenBao conformance and fixture drift check (see docs/testing.md)
 ```
 
 Coverage gate: lines, statements and functions ≥90% and branches ≥80% for the shared service and the SDK/CLI. Rust has its own tests; the Workers and Node hosts are verified with the real runtimes over loopback HTTP and do not count toward the shared code's coverage percentage.
 
-A real OpenBao 2.7.1 Transit roundtrip, context rejection, key rotation and token revocation are verified locally. AWS and GCP are protocol-tested only and not yet verified against cloud accounts. The Docker daemon is not running in this environment, so the image build has not completed locally; CI runs the Docker build.
+On 2026-10-13, AWS KMS (least-privilege IAM user), Google Cloud KMS (service account and ADC) and a local OpenBao 2.7.1 were verified with real accounts: roundtrips, context rejection, permission denial, missing or disabled keys and bad credentials all ran through workerd and the Node host. Real error responses are recorded in `tests/fixtures/kms/` and replayed one by one by the offline tests; `npm run test:live` detects provider behaviour drift. See [KMS testing](docs/testing.md). The Docker daemon is not running in this environment, so the image build has not completed locally; CI runs the Docker build.
 
-Documentation: [architecture](docs/architecture.md), [configuration](docs/configuration.md), [deployment](docs/deployment.md), [security boundaries](docs/security.md), [agent guide](docs/agents.md). The historical POC is kept in `poc/` with its [benchmark report](results/REPORT.md); its fixed mock key and ciphertext format are incompatible with the production core.
+Documentation: [architecture](docs/architecture.md), [configuration](docs/configuration.md), [KMS testing](docs/testing.md), [deployment](docs/deployment.md), [security boundaries](docs/security.md), [agent guide](docs/agents.md). The historical POC is kept in `poc/` with its [benchmark report](results/REPORT.md); its fixed mock key and ciphertext format are incompatible with the production core.
