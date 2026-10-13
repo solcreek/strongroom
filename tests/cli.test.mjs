@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, stat, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-const cli = resolve('packages/strongroom/dist/cli.js');
+const cli = resolve('packages/strongroom/src/cli.ts');
 export async function runCli(args, { input = '', env = {} } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, ...args], { env: { ...process.env, STRONGROOM_TOKEN: '', STRONGROOM_URL: '', STRONGROOM_TOKEN_FILE: '', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
