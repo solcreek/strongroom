@@ -57,7 +57,7 @@ function context(value: unknown): asserts value is Context {
 export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log: Log = stderrLog): { fetch(request: Request): Promise<Response> } {
   // Configuration is compiled once per host instance. No default keys or authorization.
   const config = parseConfig(env);
-  const providers = new Map(Object.entries(config.keys).map(([key, value]) => [key, createProvider(value, fetcher)]));
+  const providers = new Map(Object.entries(config.keys).map(([key, value]) => [key, createProvider(value, fetcher, env)]));
   async function authenticate(request: Request): Promise<Principal> {
     const auth = request.headers.get('authorization') ?? '';
     if (!/^Bearer [A-Za-z0-9_-]{32,256}$/.test(auth)) throw new ServiceError('UNAUTHENTICATED', 401, 'A valid bearer token is required.');

@@ -61,7 +61,7 @@ The template uses two replicas, a private ClusterIP service, probes, resource li
 
 ## AWS
 
-Push the same image to ECR and run it in ECS Fargate or App Runner on port 8080. Map an AWS Secrets Manager secret to `STRONGROOM_CONFIG`, use `/readyz` for health checks, and terminate TLS at the platform/load balancer. For ECS use an execution role that can retrieve the config secret. KMS calls currently use credentials within that config, not the ECS task role. Set ingress rate limits and network rules appropriate to the application.
+Push the same image to ECR and run it in ECS Fargate or App Runner on port 8080. Map an AWS Secrets Manager secret to `STRONGROOM_CONFIG`, use `/readyz` for health checks, and terminate TLS at the platform/load balancer. For ECS use an execution role that can retrieve the config secret. Give the task role `kms:Encrypt`/`kms:Decrypt` on the key ARN and set `"containerCredentials": true` on the key, so the config holds no AWS secret. App Runner instance roles have not been verified with this path. Set ingress rate limits and network rules appropriate to the application.
 
 ## Render / Railway
 

@@ -2,13 +2,17 @@ import { unbase64url, utf8 } from './encoding.ts';
 
 export type KeyConfig =
   | { provider: 'local'; kek: string }
-  | { provider: 'aws'; region: string; keyId: string; accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+  | ({ provider: 'aws'; region: string; keyId: string } & ({ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | { containerCredentials: true }))
   | ({ provider: 'gcp'; keyId: string } & ({ serviceAccount: { clientEmail: string; privateKey: string } } |
       { authorizedUser: { clientId: string; clientSecret: string; refreshToken: string; quotaProject?: string } } | { metadataServer: true }))
   | { provider: 'vault' | 'openbao'; url: string; mount: string; keyName: string; token: string; namespace?: string };
 export interface Principal { tokenSha256: string; tenantId: string; permissions: ('encrypt' | 'decrypt')[]; keys: string[] }
 export interface Config { keys: Record<string, KeyConfig>; principals: Principal[] }
-export interface Bindings { STRONGROOM_CONFIG?: string; STRONGROOM_ALLOW_LOCAL?: string }
+export interface Bindings {
+  STRONGROOM_CONFIG?: string; STRONGROOM_ALLOW_LOCAL?: string;
+  // Set by ECS/Fargate and EKS Pod Identity; read only for AWS keys with containerCredentials.
+  AWS_CONTAINER_CREDENTIALS_RELATIVE_URI?: string; AWS_CONTAINER_CREDENTIALS_FULL_URI?: string; AWS_CONTAINER_AUTHORIZATION_TOKEN?: string;
+}
 export const keyPattern = /^[A-Za-z0-9_-]{1,64}$/;
 export function object(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 export function fields(value: unknown, required: string[], optional: string[] = []): asserts value is Record<string, unknown> {
@@ -44,11 +48,14 @@ export function parseConfig(env: Bindings): Config {
         check(text(k.kek) && (() => { try { return unbase64url(k.kek as string).length === 32; } catch { return false; } })(), `${at}.kek`, 'must be 32 random bytes, base64url without padding.');
         break;
       case 'aws':
-        shape(k, at, ['provider', 'region', 'keyId', 'accessKeyId', 'secretAccessKey'], ['sessionToken']);
+        if (Object.hasOwn(k as object, 'containerCredentials')) {
+          shape(k, at, ['provider', 'region', 'keyId', 'containerCredentials']);
+          check(k.containerCredentials === true, `${at}.containerCredentials`, 'must be true; uses the ECS task role or EKS Pod Identity endpoint.');
+        } else shape(k, at, ['provider', 'region', 'keyId', 'accessKeyId', 'secretAccessKey'], ['sessionToken']);
         check(text(k.region, 32) && /^[a-z]{2}(?:-[a-z]+)+-\d$/.test(k.region), `${at}.region`, 'must be an AWS region such as us-east-1.');
         check(text(k.keyId) && /^arn:aws(?:-us-gov|-cn)?:kms:[a-z0-9-]+:\d{12}:key\/[a-zA-Z0-9-]+$/.test(k.keyId), `${at}.keyId`, 'must be a full key ARN (arn:aws:kms:REGION:ACCOUNT:key/ID); aliases are rejected. Resolve one with: aws kms describe-key --key-id alias/NAME --query KeyMetadata.Arn');
         check((k.keyId as string).split(':')[3] === k.region, `${at}.keyId`, 'ARN region must equal region.');
-        for (const f of ['accessKeyId', 'secretAccessKey', 'sessionToken']) check(f === 'sessionToken' && k[f] === undefined || text(k[f]), `${at}.${f}`, 'must be a non-empty string.');
+        if (!k.containerCredentials) for (const f of ['accessKeyId', 'secretAccessKey', 'sessionToken']) check(f === 'sessionToken' && k[f] === undefined || text(k[f]), `${at}.${f}`, 'must be a non-empty string.');
         break;
       case 'gcp': {
         const credential = gcpCredentials.filter(f => Object.hasOwn(k as object, f));
