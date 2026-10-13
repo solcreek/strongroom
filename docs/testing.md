@@ -66,6 +66,7 @@ Key rings cannot be deleted. Cost: AWS charges per KMS key per month; Cloud KMS 
 
 ## Observed provider behaviour (2026-10-13)
 
+- AWS temporary credentials from `sts get-session-token` roundtrip through the `sessionToken` path; a wrong secret with a valid session token is `InvalidSignatureException`.
 - AWS KMS returns HTTP 400 for every client error, including `AccessDeniedException`, `UnrecognizedClientException` (unknown key ID or invalid session token), `InvalidSignatureException` (wrong secret), `NotFoundException` and `DisabledException`. A key pending deletion that was disabled first reports `DisabledException`.
 - With least-privilege credentials, AWS decrypting a ciphertext from another key returns `AccessDeniedException`; with a grant on both keys it returns `IncorrectKeyException`.
 - GCP returns 403 `PERMISSION_DENIED` for an ungranted key, and also for a **nonexistent** key when the caller lacks access; 404 only when the caller could see it. Wrong AAD, malformed ciphertext and ciphertext from another key are all 400 `INVALID_ARGUMENT`. A disabled version is 400 `FAILED_PRECONDITION`.

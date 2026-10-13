@@ -76,7 +76,13 @@ async function aws() {
   const secondaryBlob = await createProvider(key(secondary, adminCreds)).wrap(dek(), aad);
   const primary = createProvider(key(arn)); const blob = await primary.wrap(dek(), aad);
   const awsCli = (...a) => execFileSync('aws', ['kms', ...a, '--region', region, '--key-id', secondary], { stdio: 'ignore' });
+  // Temporary credentials for the same principal: exercises the sessionToken (x-amz-security-token) path for real.
+  const sts = JSON.parse(execFileSync('aws', ['sts', 'get-session-token', '--duration-seconds', '900', '--output', 'json'],
+    { encoding: 'utf8', env: Object.fromEntries(Object.entries({ ...env, AWS_ACCESS_KEY_ID: service.accessKeyId, AWS_SECRET_ACCESS_KEY: service.secretAccessKey }).filter(([k]) => !['AWS_SESSION_TOKEN', 'AWS_PROFILE'].includes(k))) })).Credentials;
+  const session = { accessKeyId: sts.AccessKeyId, secretAccessKey: sts.SecretAccessKey, sessionToken: sts.SessionToken };
   const results = [
+    await scenario('roundtrip-session-token', 'wrap+unwrap', key(arn, session), 'OK', async p => { const k = dek(); if (Buffer.compare(await p.unwrap(await p.wrap(k, aad), aad), k)) throw new Error('mismatch'); }),
+    await scenario('session-token-wrong-secret', 'wrap', key(arn, { ...session, secretAccessKey: 'x'.repeat(40) }), 'KMS_ACCESS_DENIED', p => p.wrap(dek(), aad)),
     await scenario('roundtrip', 'wrap+unwrap', key(arn), 'OK', async p => { const k = dek(); const w = await p.wrap(k, aad); if (Buffer.compare(await p.unwrap(w, aad), k)) throw new Error('mismatch'); }),
     await scenario('decrypt-wrong-context', 'unwrap', key(arn), 'DECRYPT_FAILED', p => p.unwrap(blob, otherAad)),
     await scenario('decrypt-malformed-ciphertext', 'unwrap', key(arn), 'DECRYPT_FAILED', p => p.unwrap(Buffer.alloc(64, 7).toString('base64'), aad)),
