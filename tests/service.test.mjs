@@ -104,8 +104,8 @@ test('provider errors are sanitized and never return envelope or plaintext', asy
   const denied = await app.fetch(request('/v1/encrypt', { plaintext: 'fake-user-api-key', context, key: 'primary' }));
   assert.equal(denied.status, 502); assert.deepEqual((({ code, retryable }) => ({ code, retryable }))((await denied.json()).error), { code: 'KMS_ACCESS_DENIED', retryable: false });
   assert.deepEqual(events.map(({ requestId, ...e }) => (assert.match(requestId, /^[0-9a-f-]{36}$/), e)), [
-    { event: 'kms_error', operation: 'encrypt', key: 'primary', provider: 'vault', code: 'KMS_UNAVAILABLE', upstreamStatus: 503, upstreamCode: null },
-    { event: 'kms_error', operation: 'encrypt', key: 'primary', provider: 'vault', code: 'KMS_ACCESS_DENIED', upstreamStatus: 403, upstreamCode: null },
+    { severity: 'WARNING', event: 'kms_error', operation: 'encrypt', key: 'primary', provider: 'vault', code: 'KMS_UNAVAILABLE', upstreamStatus: 503, upstreamCode: null },
+    { severity: 'ERROR', event: 'kms_error', operation: 'encrypt', key: 'primary', provider: 'vault', code: 'KMS_ACCESS_DENIED', upstreamStatus: 403, upstreamCode: null },
   ]);
   assert.ok(!JSON.stringify(events).includes('secret') && !JSON.stringify(events).includes('fake-user-api-key'));
   assert.equal((await errorResponse(new Error('secret')).json()).error.code, 'INTERNAL_ERROR');
