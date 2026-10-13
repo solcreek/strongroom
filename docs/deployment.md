@@ -22,6 +22,15 @@ Until the secret is installed, cryptographic endpoints return `503 NOT_CONFIGURE
 
 Outbound KMS calls require reachable HTTPS endpoints. AWS/GCP use their fixed service endpoints; Vault/OpenBao use the configured origin. No Node compatibility flag is needed. [Wrangler documentation](https://developers.cloudflare.com/workers/wrangler/commands/) describes account login, routes and secrets.
 
+## Container image without Docker
+
+```sh
+npm run build
+npm run image -- --repository REGISTRY/PATH/strongroom [--repository MIRROR/strongroom]
+```
+
+`scripts/image.mjs` needs only [`crane`](https://github.com/google/go-containerregistry/tree/main/cmd/crane) and a registry login (`crane auth login`). It adds the locally verified `dist/` as one deterministic layer to a digest-pinned `node:24-bookworm-slim`, with the Dockerfile runtime stage's user, workdir, environment and command, for `linux/amd64` and `linux/arm64`. The same commit always yields the same digest. It prints JSON with `images` pinned by digest for IaC. The Dockerfile remains the CI build; the daemonless path is for machines without Docker and for multi-registry pushes.
+
 ## Docker
 
 ```sh

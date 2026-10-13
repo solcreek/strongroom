@@ -27,7 +27,8 @@
     "test:transit": "node scripts/test-transit.mjs",
     "test:live": "node scripts/test-live.mjs",
     "test:package": "node scripts/test-package.mjs",
-    "test:container": "node scripts/test-container.mjs"
+    "test:container": "node scripts/test-container.mjs",
+    "image": "node scripts/image.mjs"
   },
   "overrides": {
     "undici": "^7.29.1",
