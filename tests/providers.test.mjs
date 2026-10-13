@@ -8,7 +8,7 @@ import { config, env } from './helpers.mjs';
 const dek = new Uint8Array(32).fill(13), aad = utf8.encode('bound-context');
 const aws = { provider: 'aws', region: 'us-east-1', keyId: 'arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012', accessKeyId: 'TESTACCESSKEY', secretAccessKey: 'test-secret', sessionToken: 'test-session' };
 const transit = { provider: 'vault', url: 'https://vault.example', mount: 'team/transit', keyName: 'strongroom', token: 'secret', namespace: 'team' };
-const response = value => new Response(JSON.stringify(value));
+const response = (value, status = 200) => new Response(JSON.stringify(value), { status });
 test('AWS signs requests, pins immutable key ARN and sends identical encryption context', async () => {
   const requests = [];
   const p = createProvider(aws, async (request, init) => {
@@ -104,4 +104,44 @@ test('classifiers cover statuses no live run can safely provoke: throttling, 5xx
   assert.equal(classifyOAuth({ status: 400 }).code, 'KMS_ACCESS_DENIED');
   for (const op of ['encrypt', 'decrypt']) { assert.equal(classifyTransit(op)({ status: 429 }).code, 'KMS_UNAVAILABLE'); assert.equal(classifyTransit(op)({ status: 500 }).code, 'KMS_UNAVAILABLE'); }
   assert.equal(classifyTransit('encrypt')({ status: 400 }).code, 'KMS_UNAVAILABLE');
+});
+test('GCP authorized-user and metadata-server credentials, token invalidation and config exclusivity', async () => {
+  const keyId = 'projects/p/locations/global/keyRings/r/cryptoKeys/k';
+  const kms = (url, init) => {
+    const body = JSON.parse(init.body);
+    return url.endsWith(':encrypt') ? response({ name: `${keyId}/cryptoKeyVersions/1`, ciphertext: base64(dek), ciphertextCrc32c: crc32c(dek), verifiedPlaintextCrc32c: true, verifiedAdditionalAuthenticatedDataCrc32c: true })
+      : response({ plaintext: body.ciphertext, plaintextCrc32c: crc32c(dek) });
+  };
+  const seen = [];
+  const user = createProvider({ provider: 'gcp', keyId, authorizedUser: { clientId: 'cid', clientSecret: 'cs', refreshToken: 'rt', quotaProject: 'billing' } }, async (url, init) => {
+    if (url === 'https://oauth2.googleapis.com/token') { seen.push(Object.fromEntries(new URLSearchParams(init.body))); return response({ access_token: 'user-token', expires_in: 3599 }); }
+    assert.equal(init.headers.authorization, 'Bearer user-token'); assert.equal(init.headers['x-goog-user-project'], 'billing');
+    return kms(url, init);
+  });
+  assert.deepEqual(await user.unwrap(await user.wrap(dek, aad), aad), dek);
+  assert.deepEqual(seen, [{ grant_type: 'refresh_token', client_id: 'cid', client_secret: 'cs', refresh_token: 'rt' }]);
+  let tokens = 0, reject = false;
+  const metadata = createProvider({ provider: 'gcp', keyId, metadataServer: true }, async (url, init) => {
+    if (url.startsWith('http://metadata.google.internal/')) {
+      assert.match(url, /\/instance\/service-accounts\/default\/token\?scopes=https:\/\/www\.googleapis\.com\/auth\/cloudkms$/);
+      assert.equal(init.headers['metadata-flavor'], 'Google'); assert.equal(init.method, undefined);
+      tokens++; return response({ access_token: `meta-${tokens}`, expires_in: 3000, token_type: 'Bearer' });
+    }
+    assert.equal(init.headers['x-goog-user-project'], undefined);
+    if (reject) { reject = false; return response({ error: { code: 401, status: 'UNAUTHENTICATED' } }, 401); }
+    return kms(url, init);
+  });
+  await metadata.wrap(dek, aad); await metadata.wrap(dek, aad); assert.equal(tokens, 1);
+  // A token revoked before its nominal expiry is dropped after the first 401, not reused for an hour.
+  reject = true; await assert.rejects(metadata.wrap(dek, aad), { code: 'KMS_ACCESS_DENIED' });
+  await metadata.wrap(dek, aad); assert.equal(tokens, 2);
+  await assert.rejects(createProvider({ provider: 'gcp', keyId, serviceAccount: { clientEmail: 'a@b', privateKey: '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----' } }, async () => { throw new Error('no network'); }).wrap(dek, aad),
+    e => e.code === 'KMS_ACCESS_DENIED' && e.upstream.code === 'INVALID_PRIVATE_KEY');
+  const parse = k => parseConfig({ ...env, STRONGROOM_CONFIG: JSON.stringify({ ...config, keys: { primary: k, restricted: k } }) });
+  assert.ok(parse({ provider: 'gcp', keyId, metadataServer: true }));
+  assert.ok(parse({ provider: 'gcp', keyId, authorizedUser: { clientId: 'a', clientSecret: 'b', refreshToken: 'c' } }));
+  for (const [k, path] of [[{ provider: 'gcp', keyId }, '$.keys.primary'], [{ provider: 'gcp', keyId, metadataServer: true, authorizedUser: {} }, '$.keys.primary'],
+    [{ provider: 'gcp', keyId, metadataServer: 'yes' }, '$.keys.primary.metadataServer'], [{ provider: 'gcp', keyId, authorizedUser: { clientId: 'a', clientSecret: 'b' } }, '$.keys.primary.authorizedUser'],
+    [{ provider: 'gcp', keyId, authorizedUser: { clientId: 'a', clientSecret: 'b', refreshToken: 'c', quotaProject: '' } }, '$.keys.primary.authorizedUser.quotaProject']])
+    assert.throws(() => parse(k), e => e.path === path);
 });

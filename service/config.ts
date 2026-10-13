@@ -3,7 +3,8 @@ import { unbase64url, utf8 } from './encoding.ts';
 export type KeyConfig =
   | { provider: 'local'; kek: string }
   | { provider: 'aws'; region: string; keyId: string; accessKeyId: string; secretAccessKey: string; sessionToken?: string }
-  | { provider: 'gcp'; keyId: string; serviceAccount: { clientEmail: string; privateKey: string } }
+  | ({ provider: 'gcp'; keyId: string } & ({ serviceAccount: { clientEmail: string; privateKey: string } } |
+      { authorizedUser: { clientId: string; clientSecret: string; refreshToken: string; quotaProject?: string } } | { metadataServer: true }))
   | { provider: 'vault' | 'openbao'; url: string; mount: string; keyName: string; token: string; namespace?: string };
 export interface Principal { tokenSha256: string; tenantId: string; permissions: ('encrypt' | 'decrypt')[]; keys: string[] }
 export interface Config { keys: Record<string, KeyConfig>; principals: Principal[] }
@@ -25,6 +26,7 @@ function shape(value: unknown, path: string, required: string[], optional: strin
   if (unknown.length) throw new ConfigError(path, `unknown field(s): ${unknown.map(k => k.length > 64 ? `${k.slice(0, 64)}…` : k).join(', ')}. Allowed: ${[...required, ...optional].join(', ')}.`);
 }
 function check(ok: boolean, path: string, rule: string) { if (!ok) throw new ConfigError(path, rule); }
+const gcpCredentials = ['serviceAccount', 'authorizedUser', 'metadataServer'];
 export function parseConfig(env: Bindings): Config {
   let config: unknown;
   try { config = JSON.parse(env.STRONGROOM_CONFIG ?? 'null'); } catch { throw new ConfigError('$', 'STRONGROOM_CONFIG must contain valid JSON.'); }
@@ -49,12 +51,19 @@ export function parseConfig(env: Bindings): Config {
         for (const f of ['accessKeyId', 'secretAccessKey', 'sessionToken']) check(f === 'sessionToken' && k[f] === undefined || text(k[f]), `${at}.${f}`, 'must be a non-empty string.');
         break;
       case 'gcp': {
-        shape(k, at, ['provider', 'keyId', 'serviceAccount']);
+        const credential = gcpCredentials.filter(f => Object.hasOwn(k as object, f));
+        check(credential.length === 1, at, `needs exactly one credential: ${gcpCredentials.join(' | ')}.`);
+        shape(k, at, ['provider', 'keyId', credential[0]]);
         check(text(k.keyId) && /^projects\/[A-Za-z0-9_-]+\/locations\/[a-z0-9-]+\/keyRings\/[A-Za-z0-9_-]+\/cryptoKeys\/[A-Za-z0-9_-]+$/.test(k.keyId), `${at}.keyId`, 'must be projects/P/locations/L/keyRings/R/cryptoKeys/K (no cryptoKeyVersions suffix).');
-        const c = k.serviceAccount, cat = `${at}.serviceAccount`;
-        shape(c, cat, ['clientEmail', 'privateKey']);
-        check(text(c.clientEmail, 256) && /^[^@\s]+@[^@\s]+$/.test(c.clientEmail), `${cat}.clientEmail`, 'must be the service account client_email.');
-        check(text(c.privateKey, 16384) && c.privateKey.startsWith('-----BEGIN PRIVATE KEY-----'), `${cat}.privateKey`, 'must be the PKCS#8 PEM private_key from the downloaded key file.');
+        const c = k[credential[0]], cat = `${at}.${credential[0]}`;
+        if (credential[0] === 'serviceAccount') {
+          shape(c, cat, ['clientEmail', 'privateKey']);
+          check(text(c.clientEmail, 256) && /^[^@\s]+@[^@\s]+$/.test(c.clientEmail), `${cat}.clientEmail`, 'must be the service account client_email.');
+          check(text(c.privateKey, 16384) && c.privateKey.startsWith('-----BEGIN PRIVATE KEY-----'), `${cat}.privateKey`, 'must be the PKCS#8 PEM private_key from the downloaded key file.');
+        } else if (credential[0] === 'authorizedUser') {
+          shape(c, cat, ['clientId', 'clientSecret', 'refreshToken'], ['quotaProject']);
+          for (const f of ['clientId', 'clientSecret', 'refreshToken', 'quotaProject']) check(f === 'quotaProject' && c[f] === undefined || text(c[f], 2048), `${cat}.${f}`, 'must be a non-empty string.');
+        } else check(c === true, cat, 'must be true; uses the GCP metadata server (Cloud Run, GKE, Compute Engine).');
         break;
       }
       case 'vault': case 'openbao': {
