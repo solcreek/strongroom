@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, stat, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 const cli = resolve('packages/strongroom/src/cli.ts');
 export async function runCli(args, { input = '', env = {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -57,4 +58,19 @@ test('CLI exit codes separate operator-side KMS failures from retryable ones', a
       assert.equal(r.code, exit, code); assert.equal(JSON.parse(r.stderr).error.code, code);
     } finally { server.close(); }
   }
+});
+test('CLI token writes the secret only to a new private file and prints a ready principal', async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'strongroom-token-'));
+  try {
+    const file = join(parent, 'token');
+    const r = await runCli(['token', '--token-file', file, '--tenant', 'acme', '--keys', 'primary, backup', '--permissions', 'decrypt']); assert.equal(r.code, 0, r.stderr);
+    const out = JSON.parse(r.stdout), token = (await readFile(file, 'utf8')).trim();
+    assert.equal((await stat(file)).mode & 0o777, 0o600); assert.match(token, /^[A-Za-z0-9_-]{43}$/); assert.ok(!r.stdout.includes(token));
+    assert.equal(out.tokenSha256, createHash('sha256').update(token).digest('hex'));
+    assert.deepEqual(out.principal, { tokenSha256: out.tokenSha256, tenantId: 'acme', permissions: ['decrypt'], keys: ['primary', 'backup'] });
+    assert.equal((await runCli(['token', '--token-file', file])).code, 2);
+    const bare = await runCli(['token', '--token-file', join(parent, 'bare')]); assert.equal(JSON.parse(bare.stdout).principal, undefined);
+    for (const args of [['token'], ['token', '--token-file', join(parent, 'x'), '--tenant', 'a'], ['token', '--token-file', join(parent, 'y'), '--tenant', 'a', '--keys', 'k', '--permissions', 'admin'], ['token', '--token-file', join(parent, 'z'), '--input', 'f']])
+      assert.equal((await runCli(args)).code, 2, args.join(' '));
+  } finally { await rm(parent, { recursive: true, force: true }); }
 });
