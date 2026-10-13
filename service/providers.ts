@@ -1,18 +1,37 @@
 import { AwsClient } from 'aws4fetch';
 import type { KeyConfig } from './config.ts';
 import { base64, base64url, unbase64, unbase64url, crc32c, utf8 } from './encoding.ts';
-import { decryptFailed, unavailable } from './errors.ts';
-import { kmsJson, type Fetch } from './transport.ts';
+import { accessDenied, decryptFailed, keyUnavailable, ServiceError, unavailable } from './errors.ts';
+import { kmsJson, type Classify, type Fetch } from './transport.ts';
 
 export interface KeyProvider { wrap(key: Uint8Array<ArrayBuffer>, aad: Uint8Array<ArrayBuffer>): Promise<string>; unwrap(wrapped: string, aad: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> }
+// A 2xx response that violates the provider contract: fail closed and retryable, tagged for operator logs.
+const malformed = () => Object.assign(unavailable(), { upstream: { status: 200, code: 'INVALID_RESPONSE' } }) as ServiceError;
 function checkedKey(value: unknown): Uint8Array<ArrayBuffer> {
   try { const key = unbase64(value as string); if (key.length === 32) return key; } catch { /* sanitized below */ }
-  throw unavailable();
+  throw malformed();
 }
 function checkedCiphertext(value: unknown): string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 16384) throw unavailable();
+  if (typeof value !== 'string' || value.length === 0 || value.length > 16384) throw malformed();
   return value;
 }
+// Observed live: AWS KMS reports every client-side error, including denied credentials, as HTTP 400 with `__type`.
+const awsDenied = new Set(['AccessDeniedException', 'UnrecognizedClientException', 'InvalidSignatureException', 'IncompleteSignature', 'IncompleteSignatureException',
+  'ExpiredTokenException', 'InvalidClientTokenId', 'MissingAuthenticationToken', 'MissingAuthenticationTokenException', 'SignatureDoesNotMatch']);
+const awsKey = new Set(['NotFoundException', 'DisabledException', 'KMSInvalidStateException', 'InvalidKeyUsageException']);
+export const classifyAws = (op: 'Encrypt' | 'Decrypt'): Classify => ({ status, code = '' }) =>
+  op === 'Decrypt' && ['InvalidCiphertextException', 'IncorrectKeyException'].includes(code) ? decryptFailed()
+    : awsDenied.has(code) || status === 401 || status === 403 ? accessDenied() : awsKey.has(code) ? keyUnavailable() : unavailable();
+// Google returns canonical `error.status`; a disabled or destroyed version is FAILED_PRECONDITION.
+export const classifyGcp = (op: 'encrypt' | 'decrypt'): Classify => ({ status, code }) =>
+  status === 401 || status === 403 ? accessDenied() : status === 404 || code === 'FAILED_PRECONDITION' ? keyUnavailable()
+    : op === 'decrypt' && code === 'INVALID_ARGUMENT' ? decryptFailed() : unavailable();
+// OAuth token endpoints: a rejected assertion, client or refresh token will not recover by retrying.
+export const classifyOAuth: Classify = ({ status, code }) =>
+  [400, 401, 403].includes(status) && (code === undefined || ['invalid_grant', 'invalid_client', 'unauthorized_client', 'invalid_scope'].includes(code)) ? accessDenied() : unavailable();
+// Vault/OpenBao: the status carries the meaning, except a missing key or a version below min_decryption_version (400).
+export const classifyTransit = (op: 'encrypt' | 'decrypt'): Classify => ({ status, code }) =>
+  status === 401 || status === 403 ? accessDenied() : status === 404 || code === 'key_not_found' || code === 'version_disallowed' ? keyUnavailable() : op === 'decrypt' && [400, 422].includes(status) ? decryptFailed() : unavailable();
 export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch): KeyProvider {
   const config = supplied;
   if (config.provider === 'local') {
@@ -39,8 +58,8 @@ export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch): Key
     const call = async (op: 'Encrypt' | 'Decrypt', value: string, aad: Uint8Array) => {
       const request = await client.sign(url, { method: 'POST', headers: { 'content-type': 'application/x-amz-json-1.1', 'x-amz-target': `TrentService.${op}` },
         body: JSON.stringify({ KeyId: config.keyId, EncryptionAlgorithm: 'SYMMETRIC_DEFAULT', EncryptionContext: { strongroom: base64(aad) }, [op === 'Encrypt' ? 'Plaintext' : 'CiphertextBlob']: value }) });
-      const result = await kmsJson(fetcher, request, {}, op === 'Decrypt');
-      if (result.KeyId !== config.keyId || result.EncryptionAlgorithm !== 'SYMMETRIC_DEFAULT') throw unavailable();
+      const result = await kmsJson(fetcher, request, {}, classifyAws(op));
+      if (result.KeyId !== config.keyId || result.EncryptionAlgorithm !== 'SYMMETRIC_DEFAULT') throw malformed();
       return result;
     }
     return {
@@ -49,23 +68,15 @@ export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch): Key
     };
   }
   if (config.provider === 'gcp') {
+    const tokenRequest = gcpTokenSource(config, fetcher);
     let cached: { value: string; until: number } | undefined;
     let inflight: Promise<string> | undefined;
     const token = async (): Promise<string> => {
       if (cached && Date.now() < cached.until) return cached.value;
       if (inflight) return inflight;
       inflight = (async () => {
-        const now = Math.floor(Date.now() / 1000);
-        const header = base64url(utf8.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
-        const claims = base64url(utf8.encode(JSON.stringify({ iss: config.serviceAccount.clientEmail, scope: 'https://www.googleapis.com/auth/cloudkms', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })));
-        const pkcs8 = unbase64(config.serviceAccount.privateKey.replace(/-----[A-Z ]+-----|\s/g, ''));
-        let key: CryptoKey;
-        try { key = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']); }
-        finally { pkcs8.fill(0); }
-        const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, utf8.encode(`${header}.${claims}`));
-        const result = await kmsJson(fetcher, 'https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${header}.${claims}.${base64url(new Uint8Array(sig))}` }).toString() });
-        if (typeof result.access_token !== 'string' || result.access_token.length < 1 || !Number.isFinite(result.expires_in) || result.expires_in <= 60) throw unavailable();
+        const result = await tokenRequest();
+        if (typeof result.access_token !== 'string' || result.access_token.length < 1 || !Number.isFinite(result.expires_in) || result.expires_in <= 60) throw malformed();
         cached = { value: result.access_token, until: Date.now() + Math.min(result.expires_in - 60, 3540) * 1000 };
         return cached.value;
       })();
@@ -73,38 +84,63 @@ export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch): Key
     }
     const call = async (op: 'encrypt' | 'decrypt', bytes: Uint8Array, aad: Uint8Array) => {
       const field = op === 'encrypt' ? 'plaintext' : 'ciphertext';
-      return kmsJson(fetcher, `https://cloudkms.googleapis.com/v1/${config.keyId}:${op}`, {
-        method: 'POST', headers: { authorization: `Bearer ${await token()}`, 'content-type': 'application/json' },
+      const headers: Record<string, string> = { authorization: `Bearer ${await token()}`, 'content-type': 'application/json' };
+      const r = await kmsJson(fetcher, `https://cloudkms.googleapis.com/v1/${config.keyId}:${op}`, { method: 'POST', headers,
         body: JSON.stringify({ [field]: base64(bytes), [`${field}Crc32c`]: crc32c(bytes), additionalAuthenticatedData: base64(aad), additionalAuthenticatedDataCrc32c: crc32c(aad) }),
-      }, op === 'decrypt');
+      }, classifyGcp(op));
+      return r;
     }
+    // An expired or revoked cached token must not stick for its nominal lifetime.
+    const guard = async <T>(run: () => Promise<T>): Promise<T> => {
+      try { return await run(); } catch (e) { if (e instanceof ServiceError && e.code === 'KMS_ACCESS_DENIED') cached = undefined; throw e; }
+    };
     return {
-      async wrap(key, aad) {
+      wrap: (key, aad) => guard(async () => {
         const r = await call('encrypt', key, aad);
-        if (typeof r.name !== 'string' || !r.name.startsWith(`${config.keyId}/cryptoKeyVersions/`) || !r.verifiedPlaintextCrc32c || !r.verifiedAdditionalAuthenticatedDataCrc32c || crc32c(unbase64(r.ciphertext)) !== r.ciphertextCrc32c) throw unavailable();
+        let ciphertext: Uint8Array;
+        try { ciphertext = unbase64(r.ciphertext); } catch { throw malformed(); }
+        if (typeof r.name !== 'string' || !r.name.startsWith(`${config.keyId}/cryptoKeyVersions/`) || r.verifiedPlaintextCrc32c !== true || r.verifiedAdditionalAuthenticatedDataCrc32c !== true || crc32c(ciphertext) !== r.ciphertextCrc32c) throw malformed();
         return checkedCiphertext(r.ciphertext);
-      },
-      async unwrap(wrapped, aad) {
+      }),
+      unwrap: (wrapped, aad) => guard(async () => {
         let bytes: Uint8Array<ArrayBuffer>;
         try { bytes = unbase64(wrapped); } catch { throw decryptFailed(); }
         const r = await call('decrypt', bytes, aad);
         const key = checkedKey(r.plaintext);
-        if (crc32c(key) !== r.plaintextCrc32c) { key.fill(0); throw unavailable(); }
+        if (crc32c(key) !== r.plaintextCrc32c) { key.fill(0); throw malformed(); }
         return key;
-      },
+      }),
     };
   }
   const origin = new URL(config.url).origin;
-  const transit = async (op: string, value: string, aad: Uint8Array) => {
+  const transit = async (op: 'encrypt' | 'decrypt', value: string, aad: Uint8Array) => {
     const headers: Record<string, string> = { 'content-type': 'application/json', 'x-vault-token': config.token };
     if (config.namespace) headers['x-vault-namespace'] = config.namespace;
     const r = await kmsJson(fetcher, `${origin}/v1/${config.mount}/${op}/${config.keyName}`, { method: 'POST', headers,
-      body: JSON.stringify({ [op === 'encrypt' ? 'plaintext' : 'ciphertext']: value, context: base64(aad), associated_data: base64(aad) }) }, op === 'decrypt');
-    if (!r.data || typeof r.data !== 'object') throw unavailable();
+      body: JSON.stringify({ [op === 'encrypt' ? 'plaintext' : 'ciphertext']: value, context: base64(aad), associated_data: base64(aad) }) }, classifyTransit(op));
+    if (!r.data || typeof r.data !== 'object') throw malformed();
     return r.data;
   }
   return {
     async wrap(key, aad) { return checkedCiphertext((await transit('encrypt', base64(key), aad)).ciphertext); },
     async unwrap(wrapped, aad) { return checkedKey((await transit('decrypt', wrapped, aad)).plaintext); },
+  };
+}
+type GcpConfig = Extract<KeyConfig, { provider: 'gcp' }>;
+// Returns the raw OAuth token response for shared validation and caching.
+function gcpTokenSource(config: GcpConfig, fetcher: Fetch): () => Promise<Record<string, any>> {
+  const form = (body: Record<string, string>) => ({ method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() });
+  return async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const header = base64url(utf8.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
+    const claims = base64url(utf8.encode(JSON.stringify({ iss: config.serviceAccount.clientEmail, scope: 'https://www.googleapis.com/auth/cloudkms', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })));
+    let key: CryptoKey;
+    try {
+      const pkcs8 = unbase64(config.serviceAccount.privateKey.replace(/-----[A-Z ]+-----|\s/g, ''));
+      try { key = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']); }
+      finally { pkcs8.fill(0); }
+    } catch { throw Object.assign(accessDenied(), { upstream: { status: 0, code: 'INVALID_PRIVATE_KEY' } }); }
+    const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, utf8.encode(`${header}.${claims}`));
+    return kmsJson(fetcher, 'https://oauth2.googleapis.com/token', form({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${header}.${claims}.${base64url(new Uint8Array(sig))}` }), classifyOAuth);
   };
 }

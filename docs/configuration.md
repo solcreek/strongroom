@@ -89,6 +89,21 @@ path "transit/encrypt/strongroom" { capabilities = ["update"] }
 path "transit/decrypt/strongroom" { capabilities = ["update"] }
 ```
 
-Use `vault` in place of `bao` for Vault. Tokens must be renewed or replaced externally. Provider `400`/`422` on unwrap becomes `DECRYPT_FAILED`; unavailable, permission, network and malformed-provider responses fail closed as `KMS_UNAVAILABLE` without forwarding upstream details.
+Use `vault` in place of `bao` for Vault. Tokens must be renewed or replaced externally.
+
+## Provider error mapping
+
+Upstream failures map to four stable codes; upstream messages are never forwarded.
+
+| Code | HTTP | Retryable | Upstream evidence |
+| --- | --- | --- | --- |
+| `DECRYPT_FAILED` | 400 | no | AWS `InvalidCiphertextException` / `IncorrectKeyException`; GCP decrypt `INVALID_ARGUMENT`; Transit decrypt 400 |
+| `KMS_ACCESS_DENIED` | 502 | no | AWS `AccessDeniedException`, `UnrecognizedClientException`, `InvalidSignatureException`; GCP 401/403; OAuth `invalid_grant`/`invalid_client`; Transit 401/403 |
+| `KMS_KEY_UNAVAILABLE` | 502 | no | AWS `NotFoundException`, `DisabledException`, `KMSInvalidStateException`; GCP 404 or `FAILED_PRECONDITION`; Transit missing key or version below `min_decryption_version` |
+| `KMS_UNAVAILABLE` | 503 | yes | throttling, 5xx, network, timeout, redirects, malformed or unrecognized responses |
+
+AWS KMS reports every client error, including rejected credentials, as HTTP 400 with a `__type`; never infer meaning from the status alone. With least-privilege credentials, decrypting a ciphertext produced by a different AWS key returns `AccessDeniedException` (KMS authorizes the embedded key first), so it surfaces as `KMS_ACCESS_DENIED`, not `DECRYPT_FAILED`.
+
+Each KMS failure writes one JSON line to stderr (Node) or the Workers log: `{"event":"kms_error","requestId","operation","key","provider","code","upstreamStatus","upstreamCode"}`. `upstreamCode` is an allowlisted machine code (`__type`, Google `error.status`, OAuth `error`), never a message. Match the response's `x-request-id` to find it.
 
 References: [Vault Transit API](https://developer.hashicorp.com/vault/api-docs/secret/transit), [OpenBao Transit](https://openbao.org/docs/secrets/transit/).

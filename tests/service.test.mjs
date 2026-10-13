@@ -83,18 +83,29 @@ test('invalid configuration never starts and local keys require opt-in', () => {
 });
 test('provider errors are sanitized and never return envelope or plaintext', async () => {
   const kms = { provider: 'vault', url: 'https://vault.example', mount: 'transit', keyName: 'strongroom', token: 'upstream-secret' };
-  const app = appWith({ STRONGROOM_CONFIG: JSON.stringify({ ...config, keys: { primary: kms, restricted: kms } }) }, async () => new Response('upstream-secret: fake-user-api-key', { status: 503 }));
+  const events = [];
+  let status = 503;
+  const app = appWith({ STRONGROOM_CONFIG: JSON.stringify({ ...config, keys: { primary: kms, restricted: kms } }) }, async () => new Response('{"errors":["upstream-secret: fake-user-api-key"]}', { status }), e => events.push(e));
   const response = await app.fetch(request('/v1/encrypt', { plaintext: 'fake-user-api-key', context, key: 'primary' }));
   assert.equal(response.status, 503);
   const body = await response.text(); assert.ok(!body.includes('fake-user-api-key')); assert.ok(!body.includes('upstream-secret'));
   assert.equal(JSON.parse(body).error.retryable, true);
+  // Credentials rejected upstream: not retryable, distinct from a context mismatch, and the operator log names the upstream status only.
+  status = 403;
+  const denied = await app.fetch(request('/v1/encrypt', { plaintext: 'fake-user-api-key', context, key: 'primary' }));
+  assert.equal(denied.status, 502); assert.deepEqual((({ code, retryable }) => ({ code, retryable }))((await denied.json()).error), { code: 'KMS_ACCESS_DENIED', retryable: false });
+  assert.deepEqual(events.map(({ requestId, ...e }) => (assert.match(requestId, /^[0-9a-f-]{36}$/), e)), [
+    { event: 'kms_error', operation: 'encrypt', key: 'primary', provider: 'vault', code: 'KMS_UNAVAILABLE', upstreamStatus: 503, upstreamCode: null },
+    { event: 'kms_error', operation: 'encrypt', key: 'primary', provider: 'vault', code: 'KMS_ACCESS_DENIED', upstreamStatus: 403, upstreamCode: null },
+  ]);
+  assert.ok(!JSON.stringify(events).includes('secret') && !JSON.stringify(events).includes('fake-user-api-key'));
   assert.equal((await errorResponse(new Error('secret')).json()).error.code, 'INTERNAL_ERROR');
 });
 test('request and provider deadlines fail closed', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const pending = kmsJson(async (_url, init) => new Promise((_, reject) => {
     init.signal.addEventListener('abort', () => reject(new Error('secret transport detail')), { once: true });
-  }), 'https://example.com');
+  }), 'https://example.com', {}, () => { throw new Error('unreachable'); });
   t.mock.timers.tick(8000);
   await assert.rejects(pending, { code: 'KMS_UNAVAILABLE' });
   t.mock.timers.reset();

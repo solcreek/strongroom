@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createProvider } from '../service/providers.ts';
+import { createProvider, classifyAws, classifyGcp, classifyOAuth, classifyTransit } from '../service/providers.ts';
 import { parseConfig } from '../service/config.ts';
-import { kmsJson } from '../service/transport.ts';
+import { kmsJson, upstreamCode } from '../service/transport.ts';
 import { base64, unbase64, crc32c, utf8 } from '../service/encoding.ts';
 import { config, env } from './helpers.mjs';
 const dek = new Uint8Array(32).fill(13), aad = utf8.encode('bound-context');
@@ -77,11 +77,31 @@ test('provider configurations reject aliases, URL credentials, insecure remote U
     assert.throws(() => parseConfig({ ...env, STRONGROOM_CONFIG: JSON.stringify({ ...config, keys: { primary: k, restricted: k } }) }));
   }
 });
+const classify = () => { throw new Error('classify must not run'); };
 test('upstream failures, redirects, malformed or oversized responses never expose upstream messages', async () => {
-  for (const fetcher of [async () => { throw new Error('credential-leak'); }, async () => new Response('credential-leak', { status: 403 }),
-    async () => new Response('secret', { status: 302, headers: { location: 'https://attacker.example' } }),
-    async () => new Response('invalid-json'), async () => response(null), async () => new Response('x'.repeat(65537)), async () => new Response(null)]) {
-    await assert.rejects(kmsJson(fetcher, 'https://example'), e => e.code === 'KMS_UNAVAILABLE' && !e.message.includes('credential-leak'));
+  for (const [fetcher, code] of [[async () => { throw new Error('credential-leak'); }, 'NETWORK_ERROR'], [async () => new Response('secret', { status: 302, headers: { location: 'https://attacker.example' } }), undefined],
+    [async () => new Response('invalid-json'), 'INVALID_RESPONSE'], [async () => response(null), 'INVALID_RESPONSE'], [async () => response([]), 'INVALID_RESPONSE'],
+    [async () => new Response('x'.repeat(65537)), 'RESPONSE_TOO_LARGE'], [async () => new Response(null), 'INVALID_RESPONSE']]) {
+    await assert.rejects(kmsJson(fetcher, 'https://example', {}, classify), e => e.code === 'KMS_UNAVAILABLE' && e.retryable && e.upstream.code === code && !e.message.includes('credential-leak'));
   }
-  await assert.rejects(kmsJson(async () => new Response('bad-ciphertext', { status: 400 }), 'https://example', {}, true), { code: 'DECRYPT_FAILED' });
+  // Unparseable error bodies still reach the classifier with the status alone; messages never become codes.
+  for (const body of ['credential-leak', JSON.stringify({ __type: 'x y' }), JSON.stringify({ errors: ['permission denied', 'x'] }), JSON.stringify({ error: { status: 'A'.repeat(65) } })]) {
+    let seen; await assert.rejects(kmsJson(async () => new Response(body, { status: 418 }), 'https://example', {}, u => { seen = u; return new Error('mapped'); }));
+    assert.deepEqual(seen, { status: 418, code: undefined });
+  }
+  assert.equal(upstreamCode({ __type: 'com.amazonaws.kms#DisabledException' }), 'DisabledException');
+});
+
+test('classifiers cover statuses no live run can safely provoke: throttling, 5xx and unknown codes stay retryable', () => {
+  for (const op of ['Encrypt', 'Decrypt']) for (const u of [{ status: 400, code: 'ThrottlingException' }, { status: 500, code: 'KMSInternalException' }, { status: 503, code: 'DependencyTimeoutException' }, { status: 400, code: 'SomethingNew' }])
+    assert.equal(classifyAws(op)(u).code, 'KMS_UNAVAILABLE');
+  assert.equal(classifyAws('Encrypt')({ status: 400, code: 'InvalidCiphertextException' }).code, 'KMS_UNAVAILABLE');
+  assert.equal(classifyAws('Encrypt')({ status: 400, code: 'KMSInvalidStateException' }).code, 'KMS_KEY_UNAVAILABLE');
+  for (const op of ['encrypt', 'decrypt']) for (const u of [{ status: 429, code: 'RESOURCE_EXHAUSTED' }, { status: 503, code: 'UNAVAILABLE' }, { status: 500, code: 'INTERNAL' }, { status: 504, code: 'DEADLINE_EXCEEDED' }])
+    assert.equal(classifyGcp(op)(u).code, 'KMS_UNAVAILABLE');
+  assert.equal(classifyGcp('encrypt')({ status: 400, code: 'INVALID_ARGUMENT' }).code, 'KMS_UNAVAILABLE');
+  for (const u of [{ status: 500 }, { status: 503 }, { status: 429 }, { status: 400, code: 'temporarily_unavailable' }]) assert.equal(classifyOAuth(u).code, 'KMS_UNAVAILABLE');
+  assert.equal(classifyOAuth({ status: 400 }).code, 'KMS_ACCESS_DENIED');
+  for (const op of ['encrypt', 'decrypt']) { assert.equal(classifyTransit(op)({ status: 429 }).code, 'KMS_UNAVAILABLE'); assert.equal(classifyTransit(op)({ status: 500 }).code, 'KMS_UNAVAILABLE'); }
+  assert.equal(classifyTransit('encrypt')({ status: 400 }).code, 'KMS_UNAVAILABLE');
 });

@@ -27,6 +27,7 @@ The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FI
 | 3 | Authentication / authorization | Obtain the correct grant; do not retry unchanged |
 | 4 | Request/decryption rejected | Verify context and envelope; never replace data with an empty fallback |
 | 5 | Retryable network/provider failure | Bounded backoff; preserve the stored envelope |
+| 6 | Service KMS credentials or key rejected (`KMS_ACCESS_DENIED`, `KMS_KEY_UNAVAILABLE`, `NOT_CONFIGURED`) | Escalate to the operator with the `requestId`; do not retry unchanged; the envelope is not at fault |
 | 1 | Other failure | Report the structured error |
 
 `strongroom doctor` checks configuration readiness and API version. It explicitly reports that token permissions and KMS connectivity are unchecked. To test those, perform an encrypt/decrypt roundtrip with a disposable synthetic value and a dedicated test record. `config-check` validates local server configuration without printing credentials or making network calls.
