@@ -44,18 +44,9 @@ Node loads config once at startup and refuses to listen if it is invalid. `/read
 
 ## Cloud Run / GCP
 
-Build and push the Docker image to your Artifact Registry. Create a Secret Manager secret containing the raw JSON configuration, grant the Cloud Run runtime identity access to that secret, and deploy with it mapped to `STRONGROOM_CONFIG`:
+Use `deploy/terraform/gcp-cloud-run`: Artifact Registry, a runtime service account with encrypt/decrypt on the listed CryptoKeys only, and a Cloud Run service whose KMS access uses `metadataServer` (no key file, no secret). Step-by-step runbook, IaC recommendations and platform caveats: [deploy/terraform/README.md](../deploy/terraform/README.md). Verified end to end on 2026-10-13.
 
-```sh
-gcloud run deploy strongroom \
-  --image REGION-docker.pkg.dev/PROJECT/REPOSITORY/strongroom:VERSION \
-  --region REGION --port 8080 \
-  --set-secrets STRONGROOM_CONFIG=strongroom-config:latest \
-  --set-env-vars STRONGROOM_ALLOW_LOCAL=false \
-  --no-allow-unauthenticated
-```
-
-Cloud Run IAM authentication is a second boundary in addition to Strongroom tokens. Its identity token must be supplied using `X-Serverless-Authorization` so `Authorization` remains the Strongroom bearer. The SDK supports a custom `fetch` for adding this header; the CLI does not obtain Google identity tokens automatically. Alternatively place the service behind a trusted ingress that performs platform authentication. For KMS, prefer `metadataServer: true` on Cloud Run and GKE Workload Identity: the service then uses the attached service account and holds no key file. Grant that account `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the CryptoKey only. See [Cloud Run service authentication](https://docs.cloud.google.com/run/docs/authenticating/service-to-service).
+With invoker IAM (`public = false`), callers send a Google ID token in `X-Serverless-Authorization` so `Authorization` remains the Strongroom bearer: SDK option `cloudRunIdToken`, CLI `STRONGROOM_CLOUD_RUN_ID_TOKEN`. Cloud Run's front end reserves `/healthz`; use `/readyz` for external checks. See [Cloud Run service authentication](https://docs.cloud.google.com/run/docs/authenticating/service-to-service).
 
 ## GKE / Kubernetes
 
@@ -70,10 +61,10 @@ The template uses two replicas, a private ClusterIP service, probes, resource li
 
 ## AWS
 
-Push the same image to ECR and run it in ECS Fargate or App Runner on port 8080. Map an AWS Secrets Manager secret to `STRONGROOM_CONFIG`, use `/readyz` for health checks, and terminate TLS at the platform/load balancer. For ECS use an execution role that can retrieve the config secret. Give the task role `kms:Encrypt`/`kms:Decrypt` on the key ARN and set `"containerCredentials": true` on the key, so the config holds no AWS secret. App Runner instance roles have not been verified with this path. Set ingress rate limits and network rules appropriate to the application.
+Use `deploy/terraform/aws-ecs-express`: ECR, a task role allowed `kms:Encrypt`/`kms:Decrypt` on the listed key ARNs only and only with Strongroom's encryption context, and an ECS Express Mode service that provisions the HTTPS load balancer. KMS access uses `containerCredentials` (no AWS secret in the configuration). Runbook: [deploy/terraform/README.md](../deploy/terraform/README.md). Verified end to end on 2026-10-13. App Runner has not been verified.
 
 ## Render / Railway
 
 `render.yaml` and `railway.json` use the root Dockerfile and `/readyz`. Supply the raw JSON `STRONGROOM_CONFIG` in the platform's secret environment settings. Render's Blueprint prompts for it; Railway requires you to add the variable. `STRONGROOM_ALLOW_LOCAL` stays false or unset. Both platforms can override `PORT`. Attach the platform's HTTPS domain and set that origin as `STRONGROOM_URL` in callers. References: [Render Blueprint](https://render.com/docs/blueprint-spec), [Railway config as code](https://docs.railway.com/config-as-code).
 
-Templates are included for these platforms; no remote deployment was performed. The Node host is tested locally over HTTP. The local Docker daemon was unavailable during this implementation; the CI workflow includes a Docker build to validate the image on a runner with Docker.
+Render and Railway templates have not been deployed; Cloud Run and ECS were (see above). The Node host is also tested locally over HTTP. The local Docker daemon was unavailable during this implementation; the CI workflow includes a Docker build to validate the image on a runner with Docker.
