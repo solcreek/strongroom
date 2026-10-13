@@ -24,19 +24,13 @@ Store one JSON object in the secret environment binding `STRONGROOM_CONFIG`. Kee
 
 Replace placeholders before use. Put the file under an ignored private directory such as `.strongroom/production.json`, mode 0600. Run `node packages/strongroom/dist/cli.js config-check --input .strongroom/production.json`. Failures exit 2 with `error.path` naming the field (for example `$.keys.primary.keyId`) and a message stating the rule; supplied values are never echoed. Validation makes no KMS calls.
 
-The SDK/CLI receives the original random token via `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FILE`, plus `STRONGROOM_URL`. The service receives only its digest. Generate token material without displaying it:
+The SDK/CLI receives the original random token via `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FILE`, plus `STRONGROOM_URL`. The service receives only its digest. Generate a token without displaying it:
 
 ```sh
-node --input-type=module <<'JS'
-import { randomBytes, createHash } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
-const token = randomBytes(32).toString('base64url');
-writeFileSync('.strongroom/production-token', token + '\n', { mode: 0o600, flag: 'wx' });
-writeFileSync('.strongroom/production-token.sha256', createHash('sha256').update(token).digest('hex') + '\n', { mode: 0o600, flag: 'wx' });
-JS
+node packages/strongroom/dist/cli.js token --token-file .strongroom/production-token --tenant your-tenant-id --keys primary --permissions encrypt,decrypt
 ```
 
-Read the digest into the principal configuration; distribute the original token only to the intended application. Rotate Strongroom tokens by adding a second principal with the new digest, migrating callers, then removing the old digest. Duplicate digests are rejected. Principals are bounded to 1000 and keys to 100 per service instance; use separate deployments when appropriate.
+The token goes only to the new 0600 file (an existing path is refused). Stdout returns `tokenSha256` and, with `--tenant` and `--keys`, a complete `principal` object to append to `principals`. Distribute the original token only to the intended application. Rotate Strongroom tokens by adding a second principal with the new digest, migrating callers, then removing the old digest. Duplicate digests are rejected. Principals are bounded to 1000 and keys to 100 per service instance; use separate deployments when appropriate.
 
 ## AWS KMS
 

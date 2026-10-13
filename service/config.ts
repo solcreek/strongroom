@@ -86,7 +86,7 @@ export function parseConfig(env: Bindings): Config {
   (config.principals as unknown[]).forEach((p, i) => {
     const at = `$.principals[${i}]`;
     shape(p, at, ['tokenSha256', 'tenantId', 'permissions', 'keys']);
-    check(text(p.tokenSha256) && /^[a-f0-9]{64}$/.test(p.tokenSha256), `${at}.tokenSha256`, 'must be the lowercase SHA-256 hex digest of the bearer token.');
+    check(text(p.tokenSha256) && /^[a-f0-9]{64}$/.test(p.tokenSha256), `${at}.tokenSha256`, 'must be the lowercase SHA-256 hex digest of the bearer token; generate one with: strongroom token --token-file FILE.');
     check(!hashes.has(p.tokenSha256 as string), `${at}.tokenSha256`, 'duplicates another principal.');
     check(text(p.tenantId, 256), `${at}.tenantId`, 'must be 1-256 UTF-8 bytes.');
     check(Array.isArray(p.permissions) && p.permissions.length > 0 && p.permissions.every(v => ['encrypt', 'decrypt'].includes(v)), `${at}.permissions`, 'must be a non-empty subset of ["encrypt","decrypt"].');
