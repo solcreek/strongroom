@@ -9,8 +9,11 @@
   "exports": { ".": { "types": "./dist/client.d.ts", "import": "./dist/index.js" } },
   "bin": { "strongroom": "./dist/cli.js" },
   "author": "linyiru",
-  "license": "UNLICENSED",
-  "files": ["README.md", "dist"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/solcreek/strongroom.git", "directory": "packages/strongroom" },
+  "homepage": "https://github.com/solcreek/strongroom#readme",
+  "bugs": "https://github.com/solcreek/strongroom/issues",
+  "files": ["README.md", "LICENSE", "dist"],
   "keywords": ["kms", "encryption", "byok", "rust", "wasm"],
   "publishConfig": {
     "access": "public",
