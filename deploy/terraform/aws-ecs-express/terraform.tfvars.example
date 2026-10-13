@@ -1,0 +1,18 @@
+region = "us-east-1"
+name   = "strongroom"
+
+# Key reference => full KMS key ARN (aws kms describe-key --key-id alias/NAME --query KeyMetadata.Arn).
+kms_keys = {
+  primary = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
+}
+
+# From: strongroom token --token-file .strongroom/app-token --tenant acme --keys primary
+principals = [{
+  token_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+  tenant_id    = "acme"
+  permissions  = ["encrypt", "decrypt"]
+  keys         = ["primary"]
+}]
+
+# Second apply: the digest-pinned reference printed by npm run image.
+# image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/strongroom@sha256:..."
