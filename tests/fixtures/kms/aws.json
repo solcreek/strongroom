@@ -4,6 +4,22 @@
   "source": "node scripts/test-live.mjs --record",
   "scenarios": [
     {
+      "name": "session-token-wrong-secret",
+      "operation": "wrap",
+      "upstream": {
+        "endpoint": "kms",
+        "status": 400,
+        "body": {
+          "__type": "InvalidSignatureException"
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
       "name": "decrypt-wrong-context",
       "operation": "unwrap",
       "upstream": {
