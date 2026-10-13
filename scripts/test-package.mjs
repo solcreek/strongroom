@@ -13,7 +13,8 @@ function run(command, args, cwd = dir) {
 try {
   const [packed] = JSON.parse(run('npm', ['pack', resolve('packages/strongroom'), '--json', '--pack-destination', dir]));
   assert.ok(packed.files.some(f => f.path === 'dist/client.d.ts'));
-  assert.ok(packed.files.every(f => f.path.startsWith('dist/') || ['README.md', 'package.json'].includes(f.path)));
+  assert.ok(packed.files.every(f => f.path.startsWith('dist/') || ['README.md', 'LICENSE', 'package.json'].includes(f.path)));
+  assert.ok(packed.files.some(f => f.path === 'LICENSE'));
   await writeFile(join(dir, 'package.json'), '{"private":true,"type":"module"}');
   run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', join(dir, packed.filename)]);
   const schema = JSON.parse(run(process.execPath, ['node_modules/strongroom/dist/cli.js', 'schema', 'encrypt']));
