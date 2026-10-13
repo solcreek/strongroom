@@ -7,7 +7,7 @@
 - KMS：AWS KMS、Google Cloud KMS、Vault、OpenBao Transit。
 - HTTP：`POST /v1/encrypt`、`POST /v1/decrypt`，固定 tenant、操作與 key 授權。
 - Agent 介面：TypeScript SDK、JSON CLI、OpenAPI 3.1、離線 JSON Schema、明確錯誤碼與 retryable 欄位。
-- 部署：Workers、Docker、Cloud Run／GKE、AWS ECS／App Runner、Render、Railway。
+- 部署：Workers、Docker、Cloud Run／GKE、AWS ECS／App Runner、Render、Railway。Cloud Run 與 ECS Express 有可直接套用的 OpenTofu／Terraform 模組，使用 workload identity、設定不含秘密，2026-10-13 已實際部署驗證：[部署 runbook](deploy/terraform/README.md)。
 
 ## 本機啟動
 
