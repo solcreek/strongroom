@@ -46,7 +46,7 @@ gcloud run deploy strongroom \
   --no-allow-unauthenticated
 ```
 
-Cloud Run IAM authentication is a second boundary in addition to Strongroom tokens. Its identity token must be supplied using `X-Serverless-Authorization` so `Authorization` remains the Strongroom bearer. The SDK supports a custom `fetch` for adding this header; the CLI does not obtain Google identity tokens automatically. Alternatively place the service behind a trusted ingress that performs platform authentication. GCP KMS credentials in this alpha still use the configured service-account key; workload identity is not yet implemented. See [Cloud Run service authentication](https://docs.cloud.google.com/run/docs/authenticating/service-to-service).
+Cloud Run IAM authentication is a second boundary in addition to Strongroom tokens. Its identity token must be supplied using `X-Serverless-Authorization` so `Authorization` remains the Strongroom bearer. The SDK supports a custom `fetch` for adding this header; the CLI does not obtain Google identity tokens automatically. Alternatively place the service behind a trusted ingress that performs platform authentication. For KMS, prefer `metadataServer: true` on Cloud Run and GKE Workload Identity: the service then uses the attached service account and holds no key file. Grant that account `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the CryptoKey only. See [Cloud Run service authentication](https://docs.cloud.google.com/run/docs/authenticating/service-to-service).
 
 ## GKE / Kubernetes
 
