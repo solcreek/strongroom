@@ -14,3 +14,10 @@ coverage/
 .dev.vars.*
 !.dev.vars.example
 .strongroom/
+
+# Terraform / OpenTofu working state; commit .terraform.lock.hcl
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
