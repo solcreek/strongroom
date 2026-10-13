@@ -108,6 +108,6 @@ Upstream failures map to four stable codes; upstream messages are never forwarde
 
 AWS KMS reports every client error, including rejected credentials, as HTTP 400 with a `__type`; never infer meaning from the status alone. With least-privilege credentials, decrypting a ciphertext produced by a different AWS key returns `AccessDeniedException` (KMS authorizes the embedded key first), so it surfaces as `KMS_ACCESS_DENIED`, not `DECRYPT_FAILED`.
 
-Each KMS failure writes one JSON line to stderr (Node) or the Workers log: `{"event":"kms_error","requestId","operation","key","provider","code","upstreamStatus","upstreamCode"}`. `upstreamCode` is an allowlisted machine code (`__type`, Google `error.status`, OAuth `error`), never a message. Match the response's `x-request-id` to find it.
+Each KMS failure writes one JSON line to stderr (Node) or the Workers log: `{"severity","event":"kms_error","requestId","operation","key","provider","code","upstreamStatus","upstreamCode"}`. `upstreamCode` is an allowlisted machine code (`__type`, Google `error.status`, OAuth `error`), never a message. Match the response's `x-request-id` to find it. `severity` is `ERROR` for `KMS_ACCESS_DENIED` / `KMS_KEY_UNAVAILABLE` and `WARNING` otherwise; Cloud Logging uses it as the entry's level (query `jsonPayload.event="kms_error"`), and CloudWatch Logs Insights can filter on it.
 
 References: [Vault Transit API](https://developer.hashicorp.com/vault/api-docs/secret/transit), [OpenBao Transit](https://openbao.org/docs/secrets/transit/).

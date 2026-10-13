@@ -91,7 +91,9 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log
       const provider = providers.get(key)!;
       const kmsFailure = (e: unknown) => {
         const error = e instanceof ServiceError ? e : unavailable();
-        log({ event: 'kms_error', requestId, operation: op, key, provider: config.keys[key].provider, code: error.code, upstreamStatus: error.upstream?.status ?? null, upstreamCode: error.upstream?.code ?? null });
+        // `severity` is the field Cloud Logging maps to a log level; operator-action codes are ERROR.
+        const severity = ['KMS_ACCESS_DENIED', 'KMS_KEY_UNAVAILABLE'].includes(error.code) ? 'ERROR' : 'WARNING';
+        log({ severity, event: 'kms_error', requestId, operation: op, key, provider: config.keys[key].provider, code: error.code, upstreamStatus: error.upstream?.status ?? null, upstreamCode: error.upstream?.code ?? null });
         return error;
       };
       if (op === 'encrypt') {
