@@ -37,14 +37,14 @@ jobs:
           export TRANSIT_BIN="$(node scripts/install-transit.mjs)"
           npm run test:transit
           npm run test:live -- --provider openbao
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage
           path: coverage
           retention-days: 14
       # The built host is reused by the container job, so the daemonless image matches what was tested.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: |
