@@ -1,5 +1,5 @@
 import { AwsClient } from 'aws4fetch';
-import type { KeyConfig } from './config.ts';
+import type { Bindings, KeyConfig } from './config.ts';
 import { base64, base64url, unbase64, unbase64url, crc32c, utf8 } from './encoding.ts';
 import { accessDenied, decryptFailed, keyUnavailable, ServiceError, unavailable } from './errors.ts';
 import { kmsJson, type Classify, type Fetch } from './transport.ts';
@@ -47,7 +47,7 @@ function credentialCache<T>(load: () => Promise<{ value: T; until: number }>) {
     },
   };
 }
-export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch): KeyProvider {
+export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch, env: Bindings = {}): KeyProvider {
   const config = supplied;
   if (config.provider === 'local') {
     const raw = unbase64url(config.kek);
@@ -68,18 +68,21 @@ export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch): Key
     };
   }
   if (config.provider === 'aws') {
-    const client = new AwsClient({ accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey, sessionToken: config.sessionToken, region: config.region, service: 'kms', retries: 0 });
+    const signer = (c: { accessKeyId: string; secretAccessKey: string; sessionToken?: string }) => new AwsClient({ ...c, region: config.region, service: 'kms', retries: 0 });
+    const clients = 'containerCredentials' in config
+      ? credentialCache(async () => { const c = await awsContainerCredentials(env, fetcher); return { value: signer(c), until: c.until }; })
+      : (fixed => ({ get: async () => fixed, guard: <R>(run: () => Promise<R>) => run() }))(signer(config));
     const url = `https://kms.${config.region}.${config.region.startsWith('cn-') ? 'amazonaws.com.cn' : 'amazonaws.com'}/`;
     const call = async (op: 'Encrypt' | 'Decrypt', value: string, aad: Uint8Array) => {
-      const request = await client.sign(url, { method: 'POST', headers: { 'content-type': 'application/x-amz-json-1.1', 'x-amz-target': `TrentService.${op}` },
+      const request = await (await clients.get()).sign(url, { method: 'POST', headers: { 'content-type': 'application/x-amz-json-1.1', 'x-amz-target': `TrentService.${op}` },
         body: JSON.stringify({ KeyId: config.keyId, EncryptionAlgorithm: 'SYMMETRIC_DEFAULT', EncryptionContext: { strongroom: base64(aad) }, [op === 'Encrypt' ? 'Plaintext' : 'CiphertextBlob']: value }) });
       const result = await kmsJson(fetcher, request, {}, classifyAws(op));
       if (result.KeyId !== config.keyId || result.EncryptionAlgorithm !== 'SYMMETRIC_DEFAULT') throw malformed();
       return result;
     }
     return {
-      async wrap(key, aad) { return checkedCiphertext((await call('Encrypt', base64(key), aad)).CiphertextBlob); },
-      async unwrap(wrapped, aad) { return checkedKey((await call('Decrypt', wrapped, aad)).Plaintext); },
+      wrap: (key, aad) => clients.guard(async () => checkedCiphertext((await call('Encrypt', base64(key), aad)).CiphertextBlob)),
+      unwrap: (wrapped, aad) => clients.guard(async () => checkedKey((await call('Decrypt', wrapped, aad)).Plaintext)),
     };
   }
   if (config.provider === 'gcp') {
@@ -153,4 +156,25 @@ function gcpTokenSource(config: GcpConfig, fetcher: Fetch): () => Promise<Record
   // Cloud Run, GKE Workload Identity and Compute Engine. Unreachable from Cloudflare Workers.
   return () => kmsJson(fetcher, 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=https://www.googleapis.com/auth/cloudkms',
     { headers: { 'metadata-flavor': 'Google' } }, classifyOAuth);
+}
+// ECS/Fargate task roles (relative URI) and EKS Pod Identity (full URI plus authorization token), per the AWS SDK
+// container credential provider. Unavailable in Cloudflare Workers.
+const containerHosts = ['169.254.170.2', '169.254.170.23', '[fd00:ec2::23]', '127.0.0.1', '[::1]', 'localhost'];
+async function awsContainerCredentials(env: Bindings, fetcher: Fetch) {
+  const fail = (code: string) => Object.assign(accessDenied(), { upstream: { status: 0, code } }) as ServiceError;
+  let url: URL;
+  try {
+    if (env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI) url = new URL(`http://169.254.170.2${env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI}`);
+    else if (env.AWS_CONTAINER_CREDENTIALS_FULL_URI) url = new URL(env.AWS_CONTAINER_CREDENTIALS_FULL_URI);
+    else throw fail('NO_CONTAINER_CREDENTIALS');
+  } catch (e) { throw e instanceof ServiceError ? e : fail('INVALID_CONTAINER_CREDENTIALS_URI'); }
+  // A plain-HTTP endpoint must be link-local or loopback, or the role credentials could be fetched from elsewhere.
+  if (url.username || url.password || (url.protocol !== 'https:' && !(url.protocol === 'http:' && containerHosts.includes(url.hostname)))) throw fail('INVALID_CONTAINER_CREDENTIALS_URI');
+  const headers: Record<string, string> = {};
+  if (env.AWS_CONTAINER_AUTHORIZATION_TOKEN) headers.authorization = env.AWS_CONTAINER_AUTHORIZATION_TOKEN;
+  const r = await kmsJson(fetcher, url.href, { headers }, ({ status }) => status === 401 || status === 403 ? accessDenied() : unavailable());
+  const until = Date.parse(r.Expiration) - 300_000;
+  if (![r.AccessKeyId, r.SecretAccessKey, r.Token].every(v => typeof v === 'string' && v.length > 0) || !Number.isFinite(until)) throw malformed();
+  // Credentials within five minutes of expiry are used for this call only.
+  return { accessKeyId: r.AccessKeyId as string, secretAccessKey: r.SecretAccessKey as string, sessionToken: r.Token as string, until: Math.max(until, Date.now()) };
 }

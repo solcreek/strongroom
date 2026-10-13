@@ -7,6 +7,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { randomBytes, generateKeyPairSync } from 'node:crypto';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { once } from 'node:events';
 import { Miniflare } from 'miniflare';
 import { createProvider } from '../service/providers.ts';
@@ -39,7 +40,7 @@ function recorder() {
     const url = typeof input === 'string' ? input : input.url;
     const response = await fetch(input, init);
     let body = null; try { body = JSON.parse(await response.clone().text()); } catch { /* non-JSON */ }
-    calls.push({ endpoint: /oauth2|metadata/.test(url) ? 'token' : 'kms', status: response.status, body: sanitize(body) });
+    calls.push({ endpoint: /oauth2|metadata/.test(url) ? 'token' : /\/v1\/credentials|169\.254\.170/.test(url) ? 'credentials' : 'kms', status: response.status, body: sanitize(body) });
     return response;
   };
   return { fetcher, calls };
@@ -50,11 +51,11 @@ async function outcome(run) {
   try { await run(); return { code: 'OK' }; } catch (e) { return { code: e.code ?? 'UNCLASSIFIED', status: e.status, retryable: e.retryable, upstream: e.upstream }; }
 }
 // Each scenario: a fresh provider with a recording fetch. `expect` is the service-level contract.
-async function scenario(name, operation, config, expect, run, attempts = 1) {
+async function scenario(name, operation, config, expect, run, attempts = 1, ambient = {}) {
   let observed, calls;
   for (let i = 0; i < attempts; i++) {
     const r = recorder();
-    observed = await outcome(() => run(createProvider(config, r.fetcher)));
+    observed = await outcome(() => run(createProvider(config, r.fetcher, ambient)));
     calls = r.calls;
     if ([expect].flat().includes(observed.code)) break;
     await new Promise(r => setTimeout(r, 3000)); // IAM and key-state changes are eventually consistent.
@@ -80,8 +81,18 @@ async function aws() {
   const sts = JSON.parse(execFileSync('aws', ['sts', 'get-session-token', '--duration-seconds', '900', '--output', 'json'],
     { encoding: 'utf8', env: Object.fromEntries(Object.entries({ ...env, AWS_ACCESS_KEY_ID: service.accessKeyId, AWS_SECRET_ACCESS_KEY: service.secretAccessKey }).filter(([k]) => !['AWS_SESSION_TOKEN', 'AWS_PROFILE'].includes(k))) })).Credentials;
   const session = { accessKeyId: sts.AccessKeyId, secretAccessKey: sts.SecretAccessKey, sessionToken: sts.SessionToken };
+  // A loopback stand-in for the ECS / EKS Pod Identity endpoint, serving the real STS session above.
+  const endpoint = createHttpServer((req, res) => {
+    const ok = req.headers.authorization === 'live-pod-token';
+    res.writeHead(ok ? 200 : 403, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(ok ? { AccessKeyId: sts.AccessKeyId, SecretAccessKey: sts.SecretAccessKey, Token: sts.SessionToken, Expiration: sts.Expiration } : { message: 'denied' }));
+  });
+  endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+  const container = { AWS_CONTAINER_CREDENTIALS_FULL_URI: `http://127.0.0.1:${endpoint.address().port}/v1/credentials`, AWS_CONTAINER_AUTHORIZATION_TOKEN: 'live-pod-token' };
   const results = [
     await scenario('roundtrip-session-token', 'wrap+unwrap', key(arn, session), 'OK', async p => { const k = dek(); if (Buffer.compare(await p.unwrap(await p.wrap(k, aad), aad), k)) throw new Error('mismatch'); }),
+    await scenario('roundtrip-container-credentials', 'wrap+unwrap', { provider: 'aws', region, keyId: arn, containerCredentials: true }, 'OK', async p => { const k = dek(); if (Buffer.compare(await p.unwrap(await p.wrap(k, aad), aad), k)) throw new Error('mismatch'); }, 1, container),
+    await scenario('container-credentials-rejected', 'wrap', { provider: 'aws', region, keyId: arn, containerCredentials: true }, 'KMS_ACCESS_DENIED', p => p.wrap(dek(), aad), 1, { ...container, AWS_CONTAINER_AUTHORIZATION_TOKEN: 'wrong' }),
     await scenario('session-token-wrong-secret', 'wrap', key(arn, { ...session, secretAccessKey: 'x'.repeat(40) }), 'KMS_ACCESS_DENIED', p => p.wrap(dek(), aad)),
     await scenario('roundtrip', 'wrap+unwrap', key(arn), 'OK', async p => { const k = dek(); const w = await p.wrap(k, aad); if (Buffer.compare(await p.unwrap(w, aad), k)) throw new Error('mismatch'); }),
     await scenario('decrypt-wrong-context', 'unwrap', key(arn), 'DECRYPT_FAILED', p => p.unwrap(blob, otherAad)),
@@ -97,6 +108,7 @@ async function aws() {
     await scenario('wrong-secret-key', 'unwrap', key(arn, { ...service, secretAccessKey: 'x'.repeat(40) }), 'KMS_ACCESS_DENIED', p => p.unwrap(blob, aad)),
     await scenario('invalid-session-token', 'wrap', key(arn, { ...service, sessionToken: 'invalid-session-token' }), 'KMS_ACCESS_DENIED', p => p.wrap(dek(), aad)),
   ];
+  endpoint.close();
   if (mutate) {
     try {
       awsCli('disable-key');

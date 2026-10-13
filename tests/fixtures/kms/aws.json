@@ -4,6 +4,24 @@
   "source": "node scripts/test-live.mjs --record",
   "scenarios": [
     {
+      "name": "container-credentials-rejected",
+      "operation": "wrap",
+      "upstream": {
+        "endpoint": "credentials",
+        "status": 403,
+        "body": {
+          "keys": [
+            "message"
+          ]
+        }
+      },
+      "expect": {
+        "code": "KMS_ACCESS_DENIED",
+        "status": 502,
+        "retryable": false
+      }
+    },
+    {
       "name": "session-token-wrong-secret",
       "operation": "wrap",
       "upstream": {

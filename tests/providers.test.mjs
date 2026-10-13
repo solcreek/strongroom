@@ -107,11 +107,13 @@ for (const fixture of fixtures) {
     assert.ok(fixture.scenarios.length >= 8);
     for (const s of fixture.scenarios) {
       const upstream = () => new Response(s.upstream.body === null ? null : JSON.stringify(s.upstream.body), { status: s.upstream.status });
-      const p = createProvider(replayConfig[fixture.provider](), async url => {
+      const viaContainer = s.upstream.endpoint === 'credentials';
+      const p = createProvider(viaContainer ? { ...aws, accessKeyId: undefined, secretAccessKey: undefined, sessionToken: undefined, containerCredentials: true } : replayConfig[fixture.provider](), async url => {
         if (String(url.url ?? url).includes('oauth2')) return s.upstream.endpoint === 'token' ? upstream() : response({ access_token: 'oauth-token', expires_in: 3600 });
-        assert.notEqual(s.upstream.endpoint, 'token', `${s.name}: KMS must not be called after a token failure`);
+        if (String(url.url ?? url).includes('/v1/credentials')) return upstream();
+        assert.ok(!['token', 'credentials'].includes(s.upstream.endpoint), `${s.name}: KMS must not be called after a credential failure`);
         return upstream();
-      });
+      }, { AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://127.0.0.1:1/v1/credentials' });
       const run = s.operation === 'wrap' ? p.wrap(dek, aad) : p.unwrap(replayWrapped[fixture.provider], aad);
       await assert.rejects(run, e => {
         assert.deepEqual({ code: e.code, status: e.status, retryable: e.retryable }, s.expect, s.name);
@@ -178,4 +180,40 @@ test('GCP authorized-user and metadata-server credentials, token invalidation an
     [{ provider: 'gcp', keyId, metadataServer: 'yes' }, '$.keys.primary.metadataServer'], [{ provider: 'gcp', keyId, authorizedUser: { clientId: 'a', clientSecret: 'b' } }, '$.keys.primary.authorizedUser'],
     [{ provider: 'gcp', keyId, authorizedUser: { clientId: 'a', clientSecret: 'b', refreshToken: 'c', quotaProject: '' } }, '$.keys.primary.authorizedUser.quotaProject']])
     assert.throws(() => parse(k), e => e.path === path);
+});
+test('AWS container credentials: endpoint rules, authorization, expiry-aware caching and rejection', async () => {
+  const container = { provider: 'aws', region: 'us-east-1', keyId: aws.keyId, containerCredentials: true };
+  const issued = n => ({ AccessKeyId: `ASIA${n}`, SecretAccessKey: 'secret', Token: `session-${n}`, Expiration: new Date(Date.now() + 3600_000).toISOString() });
+  let loads = 0, denyKms = false;
+  const fetcher = async (request, init) => {
+    if (typeof request === 'string') {
+      loads++; assert.equal(init.headers.authorization, 'pod-identity-token'); return response(issued(loads));
+    }
+    assert.equal(request.headers.get('x-amz-security-token'), `session-${loads}`);
+    if (denyKms) { denyKms = false; return response({ __type: 'ExpiredTokenException' }, 400); }
+    return response({ KeyId: aws.keyId, EncryptionAlgorithm: 'SYMMETRIC_DEFAULT', CiphertextBlob: 'opaque' });
+  };
+  const env = { AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.23/v1/credentials', AWS_CONTAINER_AUTHORIZATION_TOKEN: 'pod-identity-token' };
+  const p = createProvider(container, fetcher, env);
+  await Promise.all([p.wrap(dek, aad), p.wrap(dek, aad)]); assert.equal(loads, 1);
+  denyKms = true; await assert.rejects(p.wrap(dek, aad), { code: 'KMS_ACCESS_DENIED' });
+  await p.wrap(dek, aad); assert.equal(loads, 2);
+  // Relative URIs resolve to the fixed ECS endpoint; nearly expired credentials are refetched on every call.
+  const urls = [];
+  const ecs = createProvider(container, async (request, init) => {
+    if (typeof request === 'string') { urls.push(request); assert.equal(init.headers.authorization, undefined); return response({ ...issued(1), Expiration: new Date(Date.now() + 60_000).toISOString() }); }
+    return response({ KeyId: aws.keyId, EncryptionAlgorithm: 'SYMMETRIC_DEFAULT', CiphertextBlob: 'opaque' });
+  }, { AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/v2/credentials/abc' });
+  await ecs.wrap(dek, aad); await ecs.wrap(dek, aad);
+  assert.deepEqual(urls, ['http://169.254.170.2/v2/credentials/abc', 'http://169.254.170.2/v2/credentials/abc']);
+  const never = async () => { throw new Error('must not fetch'); };
+  for (const [e, code] of [[{}, 'NO_CONTAINER_CREDENTIALS'], [{ AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://attacker.example/creds' }, 'INVALID_CONTAINER_CREDENTIALS_URI'],
+    [{ AWS_CONTAINER_CREDENTIALS_FULL_URI: 'not a url' }, 'INVALID_CONTAINER_CREDENTIALS_URI'], [{ AWS_CONTAINER_CREDENTIALS_FULL_URI: 'https://u:p@creds.example/' }, 'INVALID_CONTAINER_CREDENTIALS_URI']])
+    await assert.rejects(createProvider(container, never, e).wrap(dek, aad), x => x.code === 'KMS_ACCESS_DENIED' && x.upstream.code === code);
+  for (const [r, code] of [[response({}, 403), 'KMS_ACCESS_DENIED'], [response({}, 500), 'KMS_UNAVAILABLE'], [response({ AccessKeyId: 'a' }), 'KMS_UNAVAILABLE'], [response({ ...issued(1), Expiration: 'soon' }), 'KMS_UNAVAILABLE']])
+    await assert.rejects(createProvider(container, async () => r.clone(), env).wrap(dek, aad), { code });
+  const parse = k => parseConfig({ ...env, STRONGROOM_CONFIG: JSON.stringify({ ...config, keys: { primary: k, restricted: k } }) });
+  assert.ok(parse(container));
+  assert.throws(() => parse({ ...container, containerCredentials: 'yes' }), e => e.path === '$.keys.primary.containerCredentials');
+  assert.throws(() => parse({ ...container, accessKeyId: 'a' }), e => e.path === '$.keys.primary' && /unknown field/.test(e.message));
 });
