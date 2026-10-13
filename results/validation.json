@@ -1,0 +1,13 @@
+{
+  "rustUnitTests": 2,
+  "nodeTests": 17,
+  "typecheck": "passed",
+  "workerdCompatibility": "passed; bidirectional interop, context mismatch, ciphertext tampering",
+  "wranglerDryRun": {
+    "version": "4.150.0",
+    "typescript": { "status": "passed", "uploadKiB": 7.33, "gzipKiB": 2.50 },
+    "rustWasm": { "status": "passed", "uploadKiB": 180.99, "gzipKiB": 74.92 }
+  },
+  "cloudDeployment": "not performed",
+  "realManagedKms": "not configured or measured"
+}
