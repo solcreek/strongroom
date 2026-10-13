@@ -9,4 +9,4 @@ export interface Envelope {
 }
 export interface EncryptInput { plaintext: string; context: Context; key: string }
 export interface DecryptInput { envelope: Envelope; context: Context }
-export interface ErrorBody { error: { code: string; message: string; retryable: boolean; requestId: string } }
+export interface ErrorBody { error: { code: string; message: string; retryable: boolean; requestId: string; path?: string } }

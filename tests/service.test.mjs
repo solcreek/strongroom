@@ -77,6 +77,15 @@ test('invalid configuration never starts and local keys require opt-in', () => {
     { ...config, principals: [{ ...config.principals[0], keys: ['missing'] }] },
     { ...config, principals: [{ ...config.principals[0], permissions: ['admin'] }] },
   ]) assert.throws(() => parseConfig({ ...env, STRONGROOM_CONFIG: JSON.stringify(c) }));
+  // Diagnostics name the JSON path and rule so an agent can repair the file, and never echo supplied values.
+  const secretKek = 'not-a-valid-kek-but-secret';
+  for (const [c, path, hint] of [[null, '$', 'JSON object'], [{ ...config, extra: true }, '$', 'unknown field(s): extra'], [{ keys: {} }, '$', 'missing required field(s): principals'],
+    [{ ...config, keys: { primary: { provider: 'local', kek: secretKek } } }, '$.keys.primary.kek', '32 random bytes'],
+    [{ ...config, keys: { primary: { provider: 'nope' } } }, '$.keys.primary.provider', 'aws, gcp'],
+    [{ ...config, keys: { primary: { provider: 'aws', region: 'us-east-1', keyId: 'alias/secret-alias', accessKeyId: 'a', secretAccessKey: 'b' } } }, '$.keys.primary.keyId', 'aws kms describe-key'],
+    [{ ...config, principals: [config.principals[0], config.principals[0]] }, '$.principals[1].tokenSha256', 'duplicates'],
+    [{ ...config, principals: [{ ...config.principals[0], keys: ['missing'] }] }, '$.principals[0].keys', 'defined in $.keys'],
+  ]) assert.throws(() => parseConfig({ ...env, STRONGROOM_CONFIG: JSON.stringify(c) }), e => e.path === path && e.message.startsWith(`${path}: `) && e.message.includes(hint) && !e.message.includes('secret'));
   assert.equal(equalHash('a'.repeat(64), 'a'.repeat(64)), true);
   assert.equal(equalHash('b'.repeat(64), 'a'.repeat(64)), false);
   assert.equal(crc32c(utf8.encode('123456789')), '3808858755');
@@ -129,4 +138,14 @@ test('unauthorized and malformed envelopes never reach KMS', async () => {
   await app.fetch(request('/v1/decrypt', { envelope: { ...envelope, version: 2 }, context }));
   await app.fetch(request('/v1/decrypt', { envelope, context }, encryptToken));
   assert.equal(calls, 0);
+});
+test('INVALID_REQUEST names the offending field without echoing its value', async () => {
+  const app = appWith(); const envelope = await encrypt(app);
+  for (const [path, body, expected] of [['/v1/encrypt', { plaintext: 'x', key: 'primary' }, '$'], ['/v1/encrypt', { plaintext: 'x', key: 'primary', context: { ...context, recordId: '' } }, '$.context.recordId'],
+    ['/v1/encrypt', { plaintext: 'x', key: 'primary', context: { ...context, extra: 'secret-value' } }, '$.context'], ['/v1/encrypt', { plaintext: 'x', key: 'bad key!', context }, '$.key'],
+    ['/v1/encrypt', { plaintext: 'x'.repeat(65537), key: 'primary', context }, '$.plaintext'], ['/v1/decrypt', { envelope: { ...envelope, key: 'secret value' }, context }, '$.envelope.key'],
+    ['/v1/decrypt', { envelope: { ...envelope, nonce: 'secret' }, context }, '$.envelope']]) {
+    const { error } = await (await app.fetch(request(path, body))).json();
+    assert.equal(error.code, 'INVALID_REQUEST'); assert.equal(error.path, expected); assert.ok(error.message.startsWith(`${expected}: `)); assert.ok(!error.message.includes('secret'));
+  }
 });

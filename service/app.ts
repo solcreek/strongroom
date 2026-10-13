@@ -15,7 +15,7 @@ export function json(value: unknown, status = 200, requestId = crypto.randomUUID
 }
 export function errorResponse(error: unknown, requestId = crypto.randomUUID()): Response {
   const e = error instanceof ServiceError ? error : new ServiceError('INTERNAL_ERROR', 500, 'An internal error occurred.');
-  return json({ error: { code: e.code, message: e.message, retryable: e.retryable, requestId } }, e.status, requestId);
+  return json({ error: { code: e.code, message: e.message, retryable: e.retryable, requestId, ...(e.path ? { path: e.path } : {}) } }, e.status, requestId);
 }
 async function body(request: Request): Promise<Record<string, unknown>> {
   if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') throw new ServiceError('UNSUPPORTED_MEDIA_TYPE', 415, 'Use application/json.');
@@ -47,9 +47,12 @@ async function body(request: Request): Promise<Record<string, unknown>> {
     })()]);
   } finally { clearTimeout(timer); }
 }
+function shape(value: unknown, path: string, required: string[]): asserts value is Record<string, unknown> {
+  try { fields(value, required); } catch { throw invalid(path, `must be an object with exactly: ${required.join(', ')}.`); }
+}
 function context(value: unknown): asserts value is Context {
-  try { fields(value, ['tenantId', 'recordId', 'purpose']); } catch { throw invalid(); }
-  if (![value.tenantId, value.recordId, value.purpose].every(v => text(v, 256))) throw invalid();
+  shape(value, '$.context', ['tenantId', 'recordId', 'purpose']);
+  for (const f of ['tenantId', 'recordId', 'purpose']) if (!text(value[f], 256)) throw invalid(`$.context.${f}`, 'must be a well-formed string of 1-256 UTF-8 bytes.');
 }
 export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log: Log = stderrLog): { fetch(request: Request): Promise<Response> } {
   // Configuration is compiled once per host instance. No default keys or authorization.
@@ -80,10 +83,10 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log
       const op = path === '/v1/encrypt' ? 'encrypt' : 'decrypt';
       if (!principal.permissions.includes(op)) throw new ServiceError('FORBIDDEN', 403, 'Operation is not permitted.');
       const input = await body(request);
-      try { fields(input, op === 'encrypt' ? ['plaintext', 'context', 'key'] : ['envelope', 'context']); } catch { throw invalid(); }
+      shape(input, '$', op === 'encrypt' ? ['plaintext', 'context', 'key'] : ['envelope', 'context']);
       context(input.context);
       const key = op === 'encrypt' ? input.key : object(input.envelope) ? input.envelope.key : undefined;
-      if (typeof key !== 'string' || !keyPattern.test(key)) throw invalid();
+      if (typeof key !== 'string' || !keyPattern.test(key)) throw invalid(op === 'encrypt' ? '$.key' : '$.envelope.key', 'must be a configured key reference matching ^[A-Za-z0-9_-]{1,64}$.');
       if (input.context.tenantId !== principal.tenantId || !principal.keys.includes(key) || !providers.has(key)) throw new ServiceError('FORBIDDEN', 403, 'Tenant or key is not permitted.');
       const provider = providers.get(key)!;
       const kmsFailure = (e: unknown) => {
@@ -92,7 +95,7 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log
         return error;
       };
       if (op === 'encrypt') {
-        if (typeof input.plaintext !== 'string' || !input.plaintext.isWellFormed() || utf8.encode(input.plaintext).length > capabilities.maxPlaintextBytes) throw invalid();
+        if (typeof input.plaintext !== 'string' || !input.plaintext.isWellFormed() || utf8.encode(input.plaintext).length > capabilities.maxPlaintextBytes) throw invalid('$.plaintext', `must be well-formed text of at most ${capabilities.maxPlaintextBytes} UTF-8 bytes.`);
         const entropy = crypto.getRandomValues(new Uint8Array(44));
         try {
           let sealed: { envelope: Envelope; aad: string };
@@ -103,7 +106,7 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log
         } finally { entropy.fill(0); }
       }
       let inspected: { aad: string };
-      try { inspected = run({ op: 'inspect', ...input }); } catch { throw invalid(); }
+      try { inspected = run({ op: 'inspect', ...input }); } catch { throw invalid('$.envelope', 'is not a valid version 1 envelope; see schema Envelope.'); }
       let dek: Uint8Array<ArrayBuffer>;
       try { dek = await provider.unwrap((input.envelope as unknown as Envelope).wrappedKey, unbase64url(inspected.aad)); }
       catch (e) { throw kmsFailure(e); }

@@ -20,6 +20,8 @@ The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FI
 {"error":{"code":"FORBIDDEN","message":"Tenant or key is not permitted.","status":403,"retryable":false,"requestId":"server-generated-id"}}
 ```
 
+`INVALID_REQUEST` and `INVALID_CONFIG` errors add `path`, the JSON path of the field to fix, and the message states the rule (`$.context.recordId: must be a well-formed string of 1-256 UTF-8 bytes.`). Messages never echo supplied values.
+
 | Exit code | Meaning | Action |
 | --- | --- | --- |
 | 0 | Success | Parse stdout or the output file |

@@ -19,6 +19,7 @@ export const schemas = {
   DecryptOutput: { type: 'object', additionalProperties: false, required: ['plaintext'], properties: { plaintext: { type: 'string' } } },
   Error: { type: 'object', required: ['error'], properties: { error: { type: 'object', required: ['code', 'message', 'retryable', 'requestId'], properties: {
     code: { type: 'string' }, message: { type: 'string' }, retryable: { type: 'boolean' }, requestId: { type: 'string' },
+    path: { type: 'string', description: 'JSON path of the offending request field, for INVALID_REQUEST only.' },
   } } } },
 };
 export const capabilities = {
