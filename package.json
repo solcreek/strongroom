@@ -22,5 +22,8 @@
     "miniflare": "4.20260730.0",
     "typescript": "5.9.3",
     "wrangler": "^4.150.0"
+  },
+  "dependencies": {
+    "aws4fetch": "1.0.20"
   }
 }
