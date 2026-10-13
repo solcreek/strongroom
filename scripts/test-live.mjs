@@ -255,10 +255,13 @@ function compare(provider, results) {
   const scenarios = results.filter(r => r.observed !== 'OK' && r.upstream);
   if (record) {
     mkdirSync('tests/fixtures/kms', { recursive: true });
-    writeFileSync(file, JSON.stringify({ provider, verified: today, source: 'node scripts/test-live.mjs --record', scenarios: scenarios.map(r => {
+    // Merge by name: scenarios not run this time (for example --mutate ones) keep their earlier recording.
+    const ran = new Set(results.map(r => r.name));
+    const kept = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).scenarios.filter(s => !ran.has(s.name)) : [];
+    writeFileSync(file, JSON.stringify({ provider, verified: today, source: 'node scripts/test-live.mjs --record', scenarios: [...scenarios.map(r => {
       const e = capabilities.errors[r.observed];
       return { name: r.name, operation: r.operation, upstream: r.upstream, expect: { code: r.observed, status: e?.status, retryable: e?.retryable } };
-    }) }, null, 2) + '\n');
+    }), ...kept] }, null, 2) + '\n');
     return [];
   }
   if (!existsSync(file)) return [`${provider}: no fixture; run with --record`];
