@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: strongroom
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /readyz
+    envVars:
+      - key: STRONGROOM_CONFIG
+        sync: false
+      - key: STRONGROOM_ALLOW_LOCAL
+        value: "false"
