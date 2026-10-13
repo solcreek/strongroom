@@ -1,5 +1,7 @@
 # Strongroom
 
+[![CI](https://github.com/solcreek/strongroom/actions/workflows/ci.yml/badge.svg)](https://github.com/solcreek/strongroom/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 以 managed KMS 保護使用者提供的 API key。你的資料庫只儲存加密 envelope，需要呼叫第三方服務時，才透過授權的 Strongroom 服務解密。
 
 目前為 **0.1.0-alpha.1 開發版**。Rust 負責 AES-256-GCM 與密文格式，Cloudflare Workers 優先；容器使用 Node 24 host 執行同一份 Rust Wasm 和 HTTP handler。npm 公開版本仍是佔名用的 `0.0.0`；以下指令使用本地建置，不會發布或部署。
@@ -82,3 +84,7 @@ Coverage gate：共享 service 與 SDK／CLI 的 lines、statements、functions 
 2026-10-13 已用真實帳戶驗證 AWS KMS（最小權限 IAM user）與 Google Cloud KMS（service account、ADC），以及本機 OpenBao 2.7.1：roundtrip、context 拒絕、權限拒絕、金鑰不存在／停用、憑證錯誤等情境都經過 workerd 與 Node host。真實錯誤回應記錄為 `tests/fixtures/kms/`，離線測試逐一重播；`npm run test:live` 會偵測 provider 行為漂移。見 [KMS 測試](docs/testing.md)。Docker daemon 在目前環境未啟動，因此本機未完成 image build；CI 會執行 Docker build。
 
 詳細文件：[架構](docs/architecture.md)、[設定](docs/configuration.md)、[KMS 測試](docs/testing.md)、[部署](docs/deployment.md)、[安全邊界](docs/security.md)、[Agent 使用指南](docs/agents.md)。歷史 POC 保留在 `poc/` 與 [benchmark 報告](results/REPORT.md)，其固定 mock key 與密文格式不相容於正式核心。
+
+## 授權與安全
+
+[MIT](LICENSE)。尚未經獨立安全稽核；漏洞請依 [SECURITY.md](SECURITY.md) 私下回報。
