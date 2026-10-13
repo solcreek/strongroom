@@ -66,7 +66,7 @@ Key rings cannot be deleted. Cost: AWS charges per KMS key per month; Cloud KMS 
 
 ## Observed provider behaviour (2026-10-13)
 
-- `containerCredentials` is exercised against real KMS through a loopback stand-in for the ECS/EKS credential endpoint that serves a real STS session; the endpoint itself is emulated, not an ECS agent.
+- `containerCredentials` is exercised against real KMS through a loopback stand-in for the ECS/EKS credential endpoint that serves a real STS session; the endpoint itself is emulated there. On 2026-10-13 the same path also ran on real ECS Fargate (task role) through `deploy/terraform/aws-ecs-express`.
 - AWS temporary credentials from `sts get-session-token` roundtrip through the `sessionToken` path; a wrong secret with a valid session token is `InvalidSignatureException`.
 - AWS KMS returns HTTP 400 for every client error, including `AccessDeniedException`, `UnrecognizedClientException` (unknown key ID or invalid session token), `InvalidSignatureException` (wrong secret), `NotFoundException` and `DisabledException`. A key pending deletion that was disabled first reports `DisabledException`.
 - With least-privilege credentials, AWS decrypting a ciphertext from another key returns `AccessDeniedException`; with a grant on both keys it returns `IncorrectKeyException`.

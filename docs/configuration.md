@@ -61,7 +61,7 @@ Use a symmetric `ENCRYPT_DECRYPT` CryptoKey. Each GCP key takes exactly one cred
 
 Access tokens are cached until 60 s before expiry and dropped on the first 401/403, then refreshed. KMS CRC32C fields are verified in both directions. Grant only `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the exact CryptoKey.
 
-Verified live 2026-10-13 against Cloud KMS: `serviceAccount` and `authorizedUser` (with and without `quotaProject`) in workerd and Node. `metadataServer` is protocol-tested only; it has not run on Cloud Run yet.
+Verified live 2026-10-13 against Cloud KMS: `serviceAccount` and `authorizedUser` (with and without `quotaProject`) in workerd and Node. `metadataServer` ran on Cloud Run against a CryptoKey in another project (see [deploy/terraform](../deploy/terraform/README.md)).
 
 Reference: [GCP encrypt API](https://cloud.google.com/kms/docs/reference/rest/v1/projects.locations.keyRings.cryptoKeys/encrypt) and [service account OAuth](https://developers.google.com/identity/protocols/oauth2/service-account).
 

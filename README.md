@@ -7,7 +7,7 @@ This is the **0.1.0-alpha.1 development release**. Rust owns AES-256-GCM and the
 - KMS: AWS KMS, Google Cloud KMS, Vault, OpenBao Transit.
 - HTTP: `POST /v1/encrypt`, `POST /v1/decrypt`, with fixed tenant, operation and key authorization.
 - Agent interface: TypeScript SDK, JSON CLI, OpenAPI 3.1, offline JSON Schema, explicit error codes and a retryable field.
-- Deployment: Workers, Docker, Cloud Run / GKE, AWS ECS / App Runner, Render, Railway.
+- Deployment: Workers, Docker, Cloud Run / GKE, AWS ECS / App Runner, Render, Railway. Cloud Run and ECS Express have ready-to-apply OpenTofu/Terraform modules that use workload identity and keep secrets out of the configuration; both were deployed and verified on 2026-10-13: [deployment runbook](deploy/terraform/README.md).
 
 ## Run locally
 
