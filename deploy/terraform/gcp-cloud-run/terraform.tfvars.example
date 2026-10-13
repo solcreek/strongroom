@@ -1,0 +1,23 @@
+project_id = "your-project"
+region     = "us-central1"
+name       = "strongroom"
+
+# Key reference => CryptoKey; it may live in a separate key project.
+kms_keys = {
+  primary = "projects/your-key-project/locations/global/keyRings/strongroom/cryptoKeys/primary"
+}
+
+# From: strongroom token --token-file .strongroom/app-token --tenant acme --keys primary
+principals = [{
+  token_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+  tenant_id    = "acme"
+  permissions  = ["encrypt", "decrypt"]
+  keys         = ["primary"]
+}]
+
+# false: callers also need roles/run.invoker and a Google ID token (STRONGROOM_CLOUD_RUN_ID_TOKEN).
+public   = false
+invokers = ["serviceAccount:your-app@your-project.iam.gserviceaccount.com"]
+
+# Second apply: the digest-pinned reference printed by npm run image.
+# image = "us-central1-docker.pkg.dev/your-project/strongroom/strongroom@sha256:..."
