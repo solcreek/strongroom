@@ -47,6 +47,12 @@ test('real workerd and Node HTTP hosts interoperate through SDK and CLI', { time
     assert.equal((await cli(['encrypt'], workerUrl, '{bad-json')).code, 2);
     assert.equal((await cli(['encrypt'], workerUrl, '{}')).code, 4);
     assert.equal((await cli(['doctor'], workerUrl, '')).code, 0);
+    const probed = await cli(['probe', '--key', 'primary', '--tenant', 'a'], workerUrl, '');
+    assert.equal(probed.code, 0, probed.stderr);
+    assert.deepEqual(JSON.parse(probed.stdout).steps.map(s => s.step), ['encrypt', 'decrypt', 'context-binding']);
+    const partial = await cli(['probe', '--key', 'primary', '--tenant', 'a'], nodeUrl, '', encryptToken);
+    assert.equal(partial.code, 3); assert.match(JSON.parse(partial.stderr).error.message, /^probe step decrypt failed/);
+    assert.equal((await cli(['probe', '--key', 'primary'], nodeUrl, '')).code, 2);
     assert.ok(!stderr.includes('cli-secret')); assert.ok(!stderr.includes('cross-runtime-secret')); assert.equal(stdout, '');
   } finally {
     if (child && child.exitCode === null) { child.kill('SIGTERM'); await once(child, 'close'); }

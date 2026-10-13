@@ -13,12 +13,13 @@ const help = {
     decrypt: 'Read DecryptInput JSON from stdin or --input FILE; return {plaintext}.',
     schema: 'Return OpenAPI; schema encrypt or schema decrypt returns the input JSON Schema. No network or credentials needed.',
     capabilities: 'Return local CLI/API capabilities. No network or credentials needed.',
-    doctor: 'Check remote readiness and API version. Does not exercise token permissions or KMS.',
+    doctor: 'Check remote readiness and API version. Does not exercise token permissions or KMS; use probe.',
+    probe: 'Roundtrip a random synthetic value through the service with --key KEY --tenant TENANT: encrypt, decrypt, and confirm a changed context is rejected. Exercises the token grants and the real KMS; nothing is stored.',
     'config-check': 'Validate STRONGROOM_CONFIG or JSON from --input FILE; no secrets returned.',
     init: 'Create random LOCAL DEVELOPMENT keys and tokens in --directory DIR (default .strongroom), with private file permissions.',
     token: 'Write a new random bearer token to a NEW --token-file FILE (mode 0600); return its SHA-256 digest, and a principal entry when --tenant and --keys are given.',
   },
-  flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'token: principal tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--help': 'This JSON document', '--version': 'JSON version' },
+  flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'token: principal tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--key': 'probe: key reference', '--record': 'probe: recordId (default strongroom-probe)', '--help': 'This JSON document', '--version': 'JSON version' },
   environment: ['STRONGROOM_URL', 'STRONGROOM_TOKEN', 'STRONGROOM_TOKEN_FILE'],
   output: { success: 'One JSON object on stdout, or --output FILE.', error: 'One JSON error object on stderr. No stack traces.' },
   exitCodes: { '0': 'success', '2': 'input/configuration error', '3': 'authentication/authorization error', '4': 'request/decryption rejected', '5': 'retryable network/provider error', '6': 'service KMS credentials or key need operator action; do not retry unchanged', '1': 'other failure' },
@@ -72,6 +73,30 @@ async function createToken(options: Record<string, string>) {
   return { tokenFile: resolve(file), tokenSha256, ...(tenantId ? { principal: { tokenSha256, tenantId, permissions, keys } } : {}),
     next: 'Add the principal to STRONGROOM_CONFIG.principals; give the application STRONGROOM_TOKEN_FILE.' };
 }
+// Each failing step keeps the service error code, so exit codes and retryability stay meaningful.
+async function probe(client: Strongroom, options: Record<string, string>) {
+  const key = options['--key'], tenantId = options['--tenant'];
+  if (!key || !tenantId) fail('probe requires --key KEY and --tenant TENANT.');
+  const context = { tenantId, recordId: options['--record'] ?? 'strongroom-probe', purpose: 'strongroom-probe' };
+  const plaintext = `probe-${randomBytes(16).toString('base64url')}`;
+  const steps: { step: string; ms: number }[] = [];
+  const step = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+    const started = performance.now();
+    try { const value = await run(); steps.push({ step: name, ms: Math.round(performance.now() - started) }); return value; }
+    catch (e) {
+      if (!(e instanceof StrongroomError)) throw e;
+      throw new StrongroomError(e.code, `probe step ${name} failed: ${e.message}`, e.status, e.retryable, e.requestId, e.path);
+    }
+  };
+  const envelope = await step('encrypt', () => client.encrypt({ key, context, plaintext }));
+  await step('decrypt', async () => { if (await client.decrypt({ envelope, context }) !== plaintext) throw new StrongroomError('PROBE_MISMATCH', 'Decrypted value differs from the probe value.'); });
+  await step('context-binding', async () => {
+    try { await client.decrypt({ envelope, context: { ...context, purpose: 'strongroom-probe-changed' } }); }
+    catch (e) { if (e instanceof StrongroomError && e.code === 'DECRYPT_FAILED') return; throw e; }
+    throw new StrongroomError('PROBE_CONTEXT_NOT_BOUND', 'A changed context decrypted successfully; the service must not be used.');
+  });
+  return { ok: true, key, tenantId, steps, envelopeBytes: JSON.stringify(envelope).length };
+}
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.length === 1 && argv[0] === '--version') return { version: capabilities.version };
@@ -80,7 +105,7 @@ async function main() {
   const options: Record<string, string> = {};
   let schemaName: string | undefined;
   if (command === 'schema' && argv[0] && !argv[0].startsWith('--')) schemaName = argv.shift();
-  const allowed = command === 'init' ? ['--directory', '--output'] : command === 'token' ? ['--token-file', '--tenant', '--keys', '--permissions', '--output'] : ['encrypt', 'decrypt', 'config-check'].includes(command) ? ['--input', '--output'] : ['--output'];
+  const allowed = command === 'init' ? ['--directory', '--output'] : command === 'token' ? ['--token-file', '--tenant', '--keys', '--permissions', '--output'] : command === 'probe' ? ['--key', '--tenant', '--record', '--output'] : ['encrypt', 'decrypt', 'config-check'].includes(command) ? ['--input', '--output'] : ['--output'];
   while (argv.length) {
     const flag = argv.shift()!;
     if (!allowed.includes(flag) || Object.hasOwn(options, flag)) fail('Unknown or repeated option. Run --help.');
@@ -101,12 +126,14 @@ async function main() {
       catch (error) { throw new StrongroomError('INVALID_CONFIG', error instanceof Error ? error.message : 'Configuration is invalid.', 0, false, undefined, error instanceof ConfigError ? error.path : undefined); }
       result = { valid: true, keyCount: Object.keys(c.keys).length, principalCount: c.principals.length, providers: [...new Set(Object.values(c.keys).map(v => v.provider))] }; break;
     }
-    case 'encrypt': case 'decrypt': case 'doctor': {
+    case 'encrypt': case 'decrypt': case 'doctor': case 'probe': {
       let token = process.env.STRONGROOM_TOKEN;
       if (!token && process.env.STRONGROOM_TOKEN_FILE) token = (await readFile(process.env.STRONGROOM_TOKEN_FILE, 'utf8')).trim();
       const client = new Strongroom({ url: process.env.STRONGROOM_URL ?? '', token: token ?? '' });
       if (command === 'doctor') {
-        await client.ready(); const c = await client.capabilities(); result = { ready: true, apiVersion: c.apiVersion, checks: ['configuration', 'api-version'], unchecked: ['token-permissions', 'kms-connectivity'] };
+        await client.ready(); const c = await client.capabilities(); result = { ready: true, apiVersion: c.apiVersion, checks: ['configuration', 'api-version'], unchecked: ['token-permissions', 'kms-connectivity'], next: 'strongroom probe --key KEY --tenant TENANT' };
+      } else if (command === 'probe') {
+        result = await probe(client, options);
       } else {
         const input = await readInput(options['--input']);
         result = command === 'encrypt' ? { envelope: await client.encrypt(input as never) } : { plaintext: await client.decrypt(input as never) };
