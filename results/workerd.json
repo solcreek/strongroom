@@ -1,0 +1,233 @@
+{
+  "createdAt": "2026-10-13T21:53:49.301Z",
+  "workerdVersion": "workerd 2026-10-06",
+  "compatibilityPassed": true,
+  "harnessProcessWallMs": 6017.919792000001,
+  "notes": [
+    "Actual local workerd runtime, socket-free test entrypoint.",
+    "Calls Worker fetch handlers with Request/Response in-process; no loopback HTTP transport.",
+    "Cross-implementation decryption, context mismatch and ciphertext tampering tested.",
+    "Workers clock advances at I/O boundaries: whole batches timed with a final 1ms timer, included in elapsed time.",
+    "averageRoundtripMs is a batch average, NOT individual-request p50 or p95.",
+    "Same isolate hosts both implementations. No per-engine RSS, CPU billing or cloud cold-start measurement.",
+    "Synthetic KMS, not a real network/provider. Three repeats with alternating engine order."
+  ],
+  "results": [
+    {
+      "engine": "typescript",
+      "repeat": 0,
+      "size": 128,
+      "iterations": 1000,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 127,
+      "averageRoundtripMs": 0.127
+    },
+    {
+      "engine": "typescript",
+      "repeat": 0,
+      "size": 1024,
+      "iterations": 500,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 95,
+      "averageRoundtripMs": 0.19
+    },
+    {
+      "engine": "typescript",
+      "repeat": 0,
+      "size": 16384,
+      "iterations": 100,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 149,
+      "averageRoundtripMs": 1.49
+    },
+    {
+      "engine": "typescript",
+      "repeat": 0,
+      "size": 128,
+      "iterations": 20,
+      "delayMsPerKmsCall": 10,
+      "batchElapsedMs": 481,
+      "averageRoundtripMs": 24.05
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 0,
+      "size": 128,
+      "iterations": 1000,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 89,
+      "averageRoundtripMs": 0.089
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 0,
+      "size": 1024,
+      "iterations": 500,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 60,
+      "averageRoundtripMs": 0.12
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 0,
+      "size": 16384,
+      "iterations": 100,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 77,
+      "averageRoundtripMs": 0.77
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 0,
+      "size": 128,
+      "iterations": 20,
+      "delayMsPerKmsCall": 10,
+      "batchElapsedMs": 481,
+      "averageRoundtripMs": 24.05
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 1,
+      "size": 128,
+      "iterations": 1000,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 79,
+      "averageRoundtripMs": 0.079
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 1,
+      "size": 1024,
+      "iterations": 500,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 61,
+      "averageRoundtripMs": 0.122
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 1,
+      "size": 16384,
+      "iterations": 100,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 106,
+      "averageRoundtripMs": 1.06
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 1,
+      "size": 128,
+      "iterations": 20,
+      "delayMsPerKmsCall": 10,
+      "batchElapsedMs": 484,
+      "averageRoundtripMs": 24.2
+    },
+    {
+      "engine": "typescript",
+      "repeat": 1,
+      "size": 128,
+      "iterations": 1000,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 118,
+      "averageRoundtripMs": 0.118
+    },
+    {
+      "engine": "typescript",
+      "repeat": 1,
+      "size": 1024,
+      "iterations": 500,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 98,
+      "averageRoundtripMs": 0.196
+    },
+    {
+      "engine": "typescript",
+      "repeat": 1,
+      "size": 16384,
+      "iterations": 100,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 150,
+      "averageRoundtripMs": 1.5
+    },
+    {
+      "engine": "typescript",
+      "repeat": 1,
+      "size": 128,
+      "iterations": 20,
+      "delayMsPerKmsCall": 10,
+      "batchElapsedMs": 479,
+      "averageRoundtripMs": 23.95
+    },
+    {
+      "engine": "typescript",
+      "repeat": 2,
+      "size": 128,
+      "iterations": 1000,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 127,
+      "averageRoundtripMs": 0.127
+    },
+    {
+      "engine": "typescript",
+      "repeat": 2,
+      "size": 1024,
+      "iterations": 500,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 95,
+      "averageRoundtripMs": 0.19
+    },
+    {
+      "engine": "typescript",
+      "repeat": 2,
+      "size": 16384,
+      "iterations": 100,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 149,
+      "averageRoundtripMs": 1.49
+    },
+    {
+      "engine": "typescript",
+      "repeat": 2,
+      "size": 128,
+      "iterations": 20,
+      "delayMsPerKmsCall": 10,
+      "batchElapsedMs": 483,
+      "averageRoundtripMs": 24.15
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 2,
+      "size": 128,
+      "iterations": 1000,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 88,
+      "averageRoundtripMs": 0.088
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 2,
+      "size": 1024,
+      "iterations": 500,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 57,
+      "averageRoundtripMs": 0.114
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 2,
+      "size": 16384,
+      "iterations": 100,
+      "delayMsPerKmsCall": 0,
+      "batchElapsedMs": 75,
+      "averageRoundtripMs": 0.75
+    },
+    {
+      "engine": "rust-wasm",
+      "repeat": 2,
+      "size": 128,
+      "iterations": 20,
+      "delayMsPerKmsCall": 10,
+      "batchElapsedMs": 478,
+      "averageRoundtripMs": 23.9
+    }
+  ]
+}

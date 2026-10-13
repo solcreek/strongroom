@@ -1,0 +1,6 @@
+{
+  "status": "not_measured",
+  "reason": "The execution sandbox denied binding a loopback TCP listener (listen EPERM 127.0.0.1).",
+  "alternative": "workerd.json contains socket-free tests in the actual local workerd runtime, including Request/Response handlers. It does not include HTTP transport latency.",
+  "rerun": "npm run bench:workers"
+}

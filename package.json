@@ -1,0 +1,26 @@
+{
+  "name": "strongroom-comparison-poc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "bench": "node scripts/bench.mjs",
+    "bench:workers": "node scripts/workers.mjs",
+    "bench:workerd": "node scripts/workerd.mjs",
+    "report": "node scripts/report.mjs",
+    "start:ts": "node --experimental-strip-types poc/typescript/server.ts"
+  },
+  "overrides": {
+    "undici": "^7.29.1",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "esbuild": "^0.28.2",
+    "miniflare": "4.20260730.0",
+    "typescript": "5.9.3",
+    "wrangler": "^4.150.0"
+  }
+}

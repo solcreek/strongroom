@@ -1,0 +1,11 @@
+{
+  "verifiedAt": "2026-10-13T22:03:44.204Z",
+  "package": "strongroom",
+  "version": "0.0.0",
+  "owner": "linyiru",
+  "distTag": "latest",
+  "url": "https://www.npmjs.com/package/strongroom",
+  "integrity": "sha512-VyMtbJovNRZIuNRSyrpXV/C8uUE08xby9gxRsa5p0Ka/NpTeS2bKYgA+DItH0dt8ef3i9kVHNg0c1Cb1qmTpcg==",
+  "contents": "package.json and README.md only",
+  "temporaryLoginRevoked": true
+}
