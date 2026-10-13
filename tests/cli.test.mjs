@@ -44,3 +44,14 @@ test('CLI init generates private random credentials, refuses overwrite and keeps
     assert.equal((await runCli(['config-check', '--input', join(parent, 'bad.json')])).code, 2);
   } finally { await rm(parent, { recursive: true, force: true }); }
 });
+test('CLI exit codes separate operator-side KMS failures from retryable ones', async () => {
+  const { createServer } = await import('node:http');
+  for (const [code, status, retryable, exit] of [['KMS_ACCESS_DENIED', 502, false, 6], ['KMS_KEY_UNAVAILABLE', 502, false, 6], ['KMS_UNAVAILABLE', 503, true, 5], ['DECRYPT_FAILED', 400, false, 4]]) {
+    const server = createServer((_, res) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { code, message: 'x', retryable, requestId: 'r' } })); });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    try {
+      const r = await runCli(['encrypt'], { input: '{}', env: { STRONGROOM_URL: `http://127.0.0.1:${server.address().port}`, STRONGROOM_TOKEN: 'a'.repeat(43) } });
+      assert.equal(r.code, exit, code); assert.equal(JSON.parse(r.stderr).error.code, code);
+    } finally { server.close(); }
+  }
+});

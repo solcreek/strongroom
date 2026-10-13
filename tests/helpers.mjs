@@ -14,7 +14,7 @@ export const config = { keys: { primary: keyConfig, restricted: keyConfig }, pri
   { tokenSha256: await sha256(encryptToken), tenantId: 'a', permissions: ['encrypt'], keys: ['primary'] },
 ] };
 export const env = { STRONGROOM_CONFIG: JSON.stringify(config), STRONGROOM_ALLOW_LOCAL: 'true' };
-export function appWith(overrides = {}, fetcher) { return createApp({ ...env, ...overrides }, execute, fetcher); }
+export function appWith(overrides = {}, fetcher, log = () => {}) { return createApp({ ...env, ...overrides }, execute, fetcher, log); }
 export function request(path, body, auth = token, options = {}) {
   return new Request(`http://localhost${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${auth}` }, body: JSON.stringify(body), ...options });
 }

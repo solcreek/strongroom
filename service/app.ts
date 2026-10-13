@@ -7,6 +7,9 @@ import { capabilities, openapi } from './contract.ts';
 import type { Fetch } from './transport.ts';
 
 export type Core = (input: string) => string;
+// Operator events: one JSON object each, never plaintext, tokens, DEKs, configuration values or upstream messages.
+export type Log = (event: Record<string, unknown>) => void;
+export const stderrLog: Log = event => console.error(JSON.stringify(event));
 export function json(value: unknown, status = 200, requestId = crypto.randomUUID()): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': requestId } });
 }
@@ -48,7 +51,7 @@ function context(value: unknown): asserts value is Context {
   try { fields(value, ['tenantId', 'recordId', 'purpose']); } catch { throw invalid(); }
   if (![value.tenantId, value.recordId, value.purpose].every(v => text(v, 256))) throw invalid();
 }
-export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch): { fetch(request: Request): Promise<Response> } {
+export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log: Log = stderrLog): { fetch(request: Request): Promise<Response> } {
   // Configuration is compiled once per host instance. No default keys or authorization.
   const config = parseConfig(env);
   const providers = new Map(Object.entries(config.keys).map(([key, value]) => [key, createProvider(value, fetcher)]));
@@ -83,6 +86,11 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch): { 
       if (typeof key !== 'string' || !keyPattern.test(key)) throw invalid();
       if (input.context.tenantId !== principal.tenantId || !principal.keys.includes(key) || !providers.has(key)) throw new ServiceError('FORBIDDEN', 403, 'Tenant or key is not permitted.');
       const provider = providers.get(key)!;
+      const kmsFailure = (e: unknown) => {
+        const error = e instanceof ServiceError ? e : unavailable();
+        log({ event: 'kms_error', requestId, operation: op, key, provider: config.keys[key].provider, code: error.code, upstreamStatus: error.upstream?.status ?? null, upstreamCode: error.upstream?.code ?? null });
+        return error;
+      };
       if (op === 'encrypt') {
         if (typeof input.plaintext !== 'string' || !input.plaintext.isWellFormed() || utf8.encode(input.plaintext).length > capabilities.maxPlaintextBytes) throw invalid();
         const entropy = crypto.getRandomValues(new Uint8Array(44));
@@ -90,7 +98,7 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch): { 
           let sealed: { envelope: Envelope; aad: string };
           try { sealed = run({ op: 'seal', ...input, entropy: base64url(entropy) }); } catch { throw invalid(); }
           try { sealed.envelope.wrappedKey = await provider.wrap(entropy.subarray(0, 32), unbase64url(sealed.aad)); }
-          catch (e) { throw e instanceof ServiceError ? e : unavailable(); }
+          catch (e) { throw kmsFailure(e); }
           return json({ envelope: sealed.envelope }, 200, requestId);
         } finally { entropy.fill(0); }
       }
@@ -98,7 +106,7 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch): { 
       try { inspected = run({ op: 'inspect', ...input }); } catch { throw invalid(); }
       let dek: Uint8Array<ArrayBuffer>;
       try { dek = await provider.unwrap((input.envelope as unknown as Envelope).wrappedKey, unbase64url(inspected.aad)); }
-      catch (e) { throw e instanceof ServiceError ? e : unavailable(); }
+      catch (e) { throw kmsFailure(e); }
       try {
         let result: { plaintext: string };
         try { result = run({ op: 'open', ...input, dek: base64url(dek) }); } catch { throw decryptFailed(); }

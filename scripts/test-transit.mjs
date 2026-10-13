@@ -54,7 +54,7 @@ try {
   const viaVault = await client.encrypt({ key: 'vault', context, plaintext: 'vault-adapter' });
   assert.equal(await client.decrypt({ envelope: viaVault, context }), 'vault-adapter');
   await admin('auth/token/revoke', { token: scoped.auth.client_token });
-  await assert.rejects(client.decrypt({ envelope, context }), { code: 'KMS_UNAVAILABLE' });
+  await assert.rejects(client.decrypt({ envelope, context }), { code: 'KMS_ACCESS_DENIED', retryable: false });
   console.log('Real Transit + workerd: roundtrip, context rejection, key rotation, both adapters and revoked credentials passed.');
 } finally {
   await mf?.dispose();

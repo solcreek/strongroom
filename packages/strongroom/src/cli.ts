@@ -20,7 +20,7 @@ const help = {
   flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--help': 'This JSON document', '--version': 'JSON version' },
   environment: ['STRONGROOM_URL', 'STRONGROOM_TOKEN', 'STRONGROOM_TOKEN_FILE'],
   output: { success: 'One JSON object on stdout, or --output FILE.', error: 'One JSON error object on stderr. No stack traces.' },
-  exitCodes: { '0': 'success', '2': 'input/configuration error', '3': 'authentication/authorization error', '4': 'request/decryption rejected', '5': 'retryable network/provider error', '1': 'other failure' },
+  exitCodes: { '0': 'success', '2': 'input/configuration error', '3': 'authentication/authorization error', '4': 'request/decryption rejected', '5': 'retryable network/provider error', '6': 'service KMS credentials or key need operator action; do not retry unchanged', '1': 'other failure' },
   limits: { maxInputBytes: 524288 },
 };
 function fail(message: string): never { throw new StrongroomError('INVALID_INPUT', message); }
@@ -111,5 +111,5 @@ try {
 } catch (error) {
   const e = error instanceof StrongroomError ? error : new StrongroomError('IO_ERROR', 'File operation failed; verify paths, permissions, and that output does not already exist.');
   process.stderr.write(JSON.stringify({ error: e.toJSON() }) + '\n');
-  process.exitCode = e.retryable ? 5 : ['INVALID_INPUT', 'INVALID_CONFIG', 'IO_ERROR'].includes(e.code) ? 2 : [401, 403].includes(e.status) ? 3 : e.status >= 400 && e.status < 500 ? 4 : 1;
+  process.exitCode = e.retryable ? 5 : ['KMS_ACCESS_DENIED', 'KMS_KEY_UNAVAILABLE', 'NOT_CONFIGURED'].includes(e.code) ? 6 : ['INVALID_INPUT', 'INVALID_CONFIG', 'IO_ERROR'].includes(e.code) ? 2 : [401, 403].includes(e.status) ? 3 : e.status >= 400 && e.status < 500 ? 4 : 1;
 }

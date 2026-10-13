@@ -25,7 +25,23 @@ export const capabilities = {
   name: 'strongroom', version: '0.1.0-alpha.1', apiVersion: 'v1', envelopeVersion: 1,
   operations: ['encrypt', 'decrypt'], providers: ['aws', 'gcp', 'vault', 'openbao', 'local'],
   maxPlaintextBytes: 65536, maxRequestBytes: 524288, openapi: '/openapi.json',
-  errors: { INVALID_REQUEST: 400, DECRYPT_FAILED: 400, UNAUTHENTICATED: 401, FORBIDDEN: 403, NOT_FOUND: 404, METHOD_NOT_ALLOWED: 405, REQUEST_TIMEOUT: 408, PAYLOAD_TOO_LARGE: 413, UNSUPPORTED_MEDIA_TYPE: 415, KMS_UNAVAILABLE: 503, NOT_CONFIGURED: 503, INTERNAL_ERROR: 500 },
+  // Every code the service emits. `action` is the next step for a caller or agent.
+  errors: {
+    INVALID_REQUEST: { status: 400, retryable: false, action: 'Fix the field named by error.path; see schema.' },
+    DECRYPT_FAILED: { status: 400, retryable: false, action: 'The envelope does not open with this context and key. Rebuild context from trusted identifiers; never overwrite the stored envelope.' },
+    UNAUTHENTICATED: { status: 401, retryable: false, action: 'Supply a valid bearer token.' },
+    FORBIDDEN: { status: 403, retryable: false, action: 'The token lacks this tenant, operation or key reference.' },
+    NOT_FOUND: { status: 404, retryable: false, action: 'Use a documented endpoint.' },
+    METHOD_NOT_ALLOWED: { status: 405, retryable: false, action: 'Use the documented method.' },
+    REQUEST_TIMEOUT: { status: 408, retryable: false, action: 'Send the complete request body promptly.' },
+    PAYLOAD_TOO_LARGE: { status: 413, retryable: false, action: 'Reduce the request size.' },
+    UNSUPPORTED_MEDIA_TYPE: { status: 415, retryable: false, action: 'Send Content-Type: application/json.' },
+    INTERNAL_ERROR: { status: 500, retryable: false, action: 'Report the requestId to the operator.' },
+    KMS_ACCESS_DENIED: { status: 502, retryable: false, action: 'Operator: the service KMS credentials or IAM grant were rejected. Fix credentials or permissions; retrying unchanged will not succeed.' },
+    KMS_KEY_UNAVAILABLE: { status: 502, retryable: false, action: 'Operator: the configured KMS key is missing, disabled or pending deletion. Re-enable it; never remap the key reference.' },
+    KMS_UNAVAILABLE: { status: 503, retryable: true, action: 'Retry with bounded exponential backoff; preserve the stored envelope.' },
+    NOT_CONFIGURED: { status: 503, retryable: false, action: 'Operator: run strongroom config-check against the service configuration.' },
+  },
   retry: 'Only retry errors marked retryable, with bounded exponential backoff. Encryption generates a new envelope on every attempt.',
 };
 function operation(name: 'encrypt' | 'decrypt') {
