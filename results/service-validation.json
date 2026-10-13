@@ -1,0 +1,42 @@
+{
+  "checkedAt": "2026-10-13T22:25:32.888Z",
+  "version": "0.1.0-alpha.1",
+  "tests": {
+    "rustCore": 4,
+    "serviceSdkCliRuntime": 23,
+    "failed": 0
+  },
+  "coverage": {
+    "scope": "Shared TypeScript service and SDK/CLI source; excludes Rust and host entrypoints, which have separate tests",
+    "lines": 100,
+    "statements": 100,
+    "functions": 100,
+    "branches": 93.61,
+    "gates": {
+      "lines": 90,
+      "statements": 90,
+      "functions": 90,
+      "branches": 80
+    }
+  },
+  "verified": [
+    "npm run verify",
+    "npm run test:package",
+    "npm run deploy:check",
+    "cargo fmt --all -- --check",
+    "Real OpenBao 2.7.1 via workerd: roundtrip, AAD rejection, key rotation, token revocation",
+    "Documented quickstart: generated private config, SDK example, workerd source watch reload"
+  ],
+  "workerDryRun": {
+    "totalKiB": 229.39,
+    "gzipKiB": 89.46
+  },
+  "limits": [
+    "No AWS or GCP cloud account integration run",
+    "Vault adapter exercised against real OpenBao Transit; no separate Vault server run",
+    "Docker daemon unavailable locally; image build and smoke test configured in CI, not yet executed",
+    "No remote deployment or alpha npm publication",
+    "Container uses Node + Rust Wasm, not a native Rust HTTP executable",
+    "Coverage is test execution coverage, not an independent security audit"
+  ]
+}
