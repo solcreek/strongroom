@@ -85,6 +85,7 @@ export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch): Key
     const call = async (op: 'encrypt' | 'decrypt', bytes: Uint8Array, aad: Uint8Array) => {
       const field = op === 'encrypt' ? 'plaintext' : 'ciphertext';
       const headers: Record<string, string> = { authorization: `Bearer ${await token()}`, 'content-type': 'application/json' };
+      if ('authorizedUser' in config && config.authorizedUser.quotaProject) headers['x-goog-user-project'] = config.authorizedUser.quotaProject;
       const r = await kmsJson(fetcher, `https://cloudkms.googleapis.com/v1/${config.keyId}:${op}`, { method: 'POST', headers,
         body: JSON.stringify({ [field]: base64(bytes), [`${field}Crc32c`]: crc32c(bytes), additionalAuthenticatedData: base64(aad), additionalAuthenticatedDataCrc32c: crc32c(aad) }),
       }, classifyGcp(op));
@@ -127,10 +128,10 @@ export function createProvider(supplied: KeyConfig, fetcher: Fetch = fetch): Key
   };
 }
 type GcpConfig = Extract<KeyConfig, { provider: 'gcp' }>;
-// Returns the raw OAuth token response for shared validation and caching.
+// One OAuth access-token source per credential type. Each returns the raw token response for shared validation and caching.
 function gcpTokenSource(config: GcpConfig, fetcher: Fetch): () => Promise<Record<string, any>> {
   const form = (body: Record<string, string>) => ({ method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body).toString() });
-  return async () => {
+  if ('serviceAccount' in config) return async () => {
     const now = Math.floor(Date.now() / 1000);
     const header = base64url(utf8.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
     const claims = base64url(utf8.encode(JSON.stringify({ iss: config.serviceAccount.clientEmail, scope: 'https://www.googleapis.com/auth/cloudkms', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })));
@@ -143,4 +144,9 @@ function gcpTokenSource(config: GcpConfig, fetcher: Fetch): () => Promise<Record
     const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, utf8.encode(`${header}.${claims}`));
     return kmsJson(fetcher, 'https://oauth2.googleapis.com/token', form({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${header}.${claims}.${base64url(new Uint8Array(sig))}` }), classifyOAuth);
   };
+  if ('authorizedUser' in config) return () => kmsJson(fetcher, 'https://oauth2.googleapis.com/token',
+    form({ grant_type: 'refresh_token', client_id: config.authorizedUser.clientId, client_secret: config.authorizedUser.clientSecret, refresh_token: config.authorizedUser.refreshToken }), classifyOAuth);
+  // Cloud Run, GKE Workload Identity and Compute Engine. Unreachable from Cloudflare Workers.
+  return () => kmsJson(fetcher, 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=https://www.googleapis.com/auth/cloudkms',
+    { headers: { 'metadata-flavor': 'Google' } }, classifyOAuth);
 }

@@ -57,7 +57,17 @@ Reference: [AWS Encrypt API](https://docs.aws.amazon.com/kms/latest/APIReference
 }
 ```
 
-Use a symmetric `ENCRYPT_DECRYPT` CryptoKey. Map the downloaded service account's `client_email` and `private_key` into these camelCase fields. The service signs an OAuth JWT, caches short-lived access tokens, refreshes before expiry and validates KMS CRC32C responses. Grant the service account encrypt/decrypt access on the exact CryptoKey. This alpha uses service-account credentials even on GCP; Workload Identity/ADC is not yet implemented.
+Use a symmetric `ENCRYPT_DECRYPT` CryptoKey. Each GCP key takes exactly one credential:
+
+| Field | Use | Token source |
+| --- | --- | --- |
+| `serviceAccount: {clientEmail, privateKey}` | Workers, any host | Signed OAuth JWT. Map the downloaded key file's `client_email` / `private_key`. |
+| `metadataServer: true` | Cloud Run, GKE Workload Identity, Compute Engine — no key file | Metadata server; unreachable from Cloudflare Workers. |
+| `authorizedUser: {clientId, clientSecret, refreshToken, quotaProject?}` | Local development with `gcloud auth application-default login` | OAuth refresh token from the ADC file (`client_id`, `client_secret`, `refresh_token`, `quota_project_id`). Not for production. |
+
+Access tokens are cached until 60 s before expiry and dropped on the first 401/403, then refreshed. KMS CRC32C fields are verified in both directions. Grant only `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the exact CryptoKey.
+
+Verified live 2026-10-13 against Cloud KMS: `serviceAccount` and `authorizedUser` (with and without `quotaProject`) in workerd and Node. `metadataServer` is protocol-tested only; it has not run on Cloud Run yet.
 
 Reference: [GCP encrypt API](https://cloud.google.com/kms/docs/reference/rest/v1/projects.locations.keyRings.cryptoKeys/encrypt) and [service account OAuth](https://developers.google.com/identity/protocols/oauth2/service-account).
 
