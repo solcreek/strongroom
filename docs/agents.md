@@ -36,17 +36,14 @@ The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FI
 
 ## Decrypt an existing CLI result
 
-An encryption result is `{envelope}`. Decryption requires `{envelope, context}`. Keep context in trusted application metadata and assemble the request explicitly:
+An encryption result is `{envelope}`. Decryption requires that envelope plus the context, which must come from trusted application metadata. Pass the stored file with `--envelope` and only the context on stdin:
 
 ```sh
-node --input-type=module <<'JS' | node --env-file=.strongroom/client.env packages/strongroom/dist/cli.js decrypt --output .strongroom/plaintext.json
-import { readFileSync } from 'node:fs';
-const { envelope } = JSON.parse(readFileSync('.strongroom/envelope.json', 'utf8'));
-process.stdout.write(JSON.stringify({ envelope, context: {
-  tenantId: 'development', recordId: 'user-123/openai', purpose: 'provider-api-key'
-}}));
-JS
+printf '%s' '{"context":{"tenantId":"development","recordId":"user-123/openai","purpose":"provider-api-key"}}' |
+  node --env-file=.strongroom/client.env packages/strongroom/dist/cli.js decrypt --envelope .strongroom/envelope.json --output .strongroom/plaintext.json
 ```
+
+`--envelope` accepts an encrypt result (`{envelope}`) or a bare envelope. Without it, stdin carries the full `{envelope, context}` DecryptInput.
 
 The output file contains plaintext. Do not include it in agent transcripts, logs or commits. Remove it when no longer needed. A decrypt operation returns a secret by design; use only the information the authorized workflow needs.
 
