@@ -1,97 +1,83 @@
-# Strongroom: Rust / TypeScript POC
+# Strongroom
 
-Compares envelope encryption of BYOK API keys across TypeScript / Web Crypto, Rust / Wasm, and a native executable built from the same Rust core.
+Protect user-supplied API keys with a managed KMS. Your database stores only encrypted envelopes; when you need to call a third-party service, an authorized Strongroom service decrypts them.
 
-**This is a performance and compatibility POC, not a service that can store real API keys.** The "KMS" that wraps data keys uses a public, fixed local test key. There is no integration with AWS KMS, Google Cloud KMS, Vault or OpenBao, and no real tenant authorization, credential management or audit facility. The HTTP entry point is off by default; use it only locally, with synthetic data.
+This is the **0.1.0-alpha.1 development release**. Rust owns AES-256-GCM and the ciphertext format, and Cloudflare Workers is the primary target; containers run the same Rust Wasm and HTTP handler on a Node 24 host. The public npm version is still the name-reserving `0.0.0`; the commands below use a local build and neither publish nor deploy anything.
 
-## Contents
+- KMS: AWS KMS, Google Cloud KMS, Vault, OpenBao Transit.
+- HTTP: `POST /v1/encrypt`, `POST /v1/decrypt`, with fixed tenant, operation and key authorization.
+- Agent interface: TypeScript SDK, JSON CLI, OpenAPI 3.1, offline JSON Schema, explicit error codes and a retryable field.
+- Deployment: Workers, Docker, Cloud Run / GKE, AWS ECS / App Runner, Render, Railway.
 
-| Implementation | Encryption and ciphertext format | Runs on |
-|---|---|---|
-| TypeScript | Web Crypto AES-256-GCM | Node.js; Cloudflare Workers |
-| Rust / Wasm | RustCrypto AES-256-GCM; Rust handles JSON, validation, encryption and base64 | Small JS HTTP host + Wasm; Node.js and local workerd |
-| Rust native | The same Rust core as Wasm; the ARM native build enables AES / PMULL hardware acceleration | CLI, as a baseline for core performance and whole-process memory |
+## Run locally
 
-The Rust / Wasm POC is not a complete workers-rs server. A shared JS host handles HTTP, request limits, the POC token, CSPRNG and simulated network waits; the Rust core handles ciphertext. The split deliberately keeps HTTP behaviour identical so framework differences do not leak into the core comparison. The native build has no HTTP server or container deployment test yet.
-
-## Reproduce
-
-Requirements: Node.js 24+, Rust 1.98.1, the `wasm32-unknown-unknown` target, wasm-bindgen CLI 0.2.105.
+Requires Node 24, Rust 1.98.1, the Wasm target and wasm-bindgen CLI 0.2.105.
 
 ```sh
 rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.105 --locked
 npm ci
 npm run build
-npm run check
-npm test
-npm run bench
-npm run bench:workerd
-npm run report
-# Where local TCP listeners are allowed, also run:
-npm run bench:workers
+npm run dev:init
+npm run dev
 ```
 
-Do not run several benchmarks at once; they interfere with each other. The build first runs Rust's standard test vectors and tampering tests. The Node tests check all nine cross-decryption combinations of the three engines, plus Unicode, the empty string, the 64 KiB limit, a wrong context, ciphertext tampering and HTTP protections. This environment forbade TCP listen, so the HTTP load test did not complete; workerd's socketless test entry point verified real-runtime compatibility and handler performance instead.
+`dev:init` creates `.strongroom/` and generates a local KEK and API token from the CSPRNG; the directory is mode 0700, files are 0600, and existing configuration is never overwritten. `dev` starts a real workerd on `127.0.0.1:8787` and rebuilds and reloads on TypeScript changes. After Rust changes, run `npm run build` and restart dev. Start the Node host with `npm run dev:node`.
 
-This workspace originally had only Homebrew Rust and no Wasm target, so `.cache/` also holds the official Rust toolchain, wasm-bindgen and the Cargo download cache. `scripts/build.mjs` uses them when present; a normal rustup installation does not need these local caches. The global toolchain is untouched. Cargo.lock and package-lock.json record dependency versions.
-
-## Run the POC
-
-The TypeScript Node HTTP server binds loopback only:
+In another terminal, run the complete SDK example:
 
 ```sh
-POC_ONLY=true POC_TOKEN=synthetic-local-token-at-least-24-chars npm run start:ts
+node --env-file=.strongroom/client.env examples/byok.mjs
 ```
+
+Or let an agent read the schema first, then use the CLI through stdin:
 
 ```sh
-curl http://127.0.0.1:8787/encrypt \
-  -H 'Authorization: Bearer synthetic-local-token-at-least-24-chars' \
-  -H 'Content-Type: application/json' \
-  -d '{"plaintext":"synthetic-api-key","context":{"tenantId":"t1","recordId":"r1","purpose":"api-key"}}'
+node packages/strongroom/dist/cli.js schema encrypt
+printf '%s' '{"key":"primary","plaintext":"demo-api-key","context":{"tenantId":"development","recordId":"user-123/openai","purpose":"provider-api-key"}}' |
+  node --env-file=.strongroom/client.env packages/strongroom/dist/cli.js encrypt --output .strongroom/envelope.json
 ```
 
-Send the whole returned envelope with the same context to `POST /decrypt` to get `{"plaintext":"synthetic-api-key"}`. The HTTP API does not accept caller-supplied entropy.
+Plaintext and tokens never need to appear in CLI flags. `--output` creates a 0600 file and refuses to overwrite; without it, one JSON value goes to stdout. Errors are one JSON value on stderr, and exit codes distinguish input, authorization, rejection and transient failures.
 
-There are two Workers configurations: `wrangler.ts.jsonc` and `wrangler.rust.jsonc`. To run locally:
+## Application integration
+
+```ts
+import { Strongroom } from 'strongroom'; // the package produced by a local npm pack
+
+const strongroom = new Strongroom({
+  url: process.env.STRONGROOM_URL!,
+  token: process.env.STRONGROOM_TOKEN!,
+});
+const context = {
+  tenantId: authenticatedTenant.id,
+  recordId: credential.id,
+  purpose: 'provider-api-key',
+};
+const envelope = await strongroom.encrypt({ key: 'primary', plaintext: userSuppliedApiKey, context });
+await database.credentials.update(credential.id, { envelope });
+
+// At use time, rebuild the context from trusted authorization data.
+const stored = await database.credentials.find(credential.id);
+const apiKey = await strongroom.decrypt({ envelope: stored.envelope, context });
+// Pass apiKey to the third-party API; never log it.
+```
+
+One Strongroom token is bound to one tenant. Your application must still verify that the user may access the given credential. Context is not a password and not a substitute for authorization; never put an API key in the context.
+
+## Development and verification
 
 ```sh
-npx wrangler dev --config wrangler.ts.jsonc --local \
-  --var POC_ONLY:true --var POC_TOKEN:synthetic-local-token-at-least-24-chars
-# or use wrangler.rust.jsonc as the config (run npm run build first)
+npm run verify           # build, TypeScript, Rust tests, service/SDK/CLI/runtime tests, coverage gate
+npm run test:fast        # fast tests after the first build
+npm run build:host       # rebuild only the HTTP host and SDK/CLI
+npm run deploy:check     # Wrangler dry-run, no deployment
+npm run test:package     # really pack, install and verify the SDK types and CLI
+TRANSIT_BIN=/path/to/bao npm run test:transit
 ```
 
-Defaults are `workers_dev: false` and `POC_ONLY: false`; nothing has been published to any account. A Workers deployment needs the compiled Wasm, JS glue and a Worker entry point; it cannot take an arbitrary WASI executable. General container platforms should use a native Rust HTTP program or a Node.js service; Wasm does not by itself remove each platform's networking, authentication and deployment differences.
+Coverage gate: lines, statements and functions ≥90% and branches ≥80% for the shared service and the SDK/CLI. Rust has its own tests; the Workers and Node hosts are verified with the real runtimes over loopback HTTP and do not count toward the shared code's coverage percentage.
 
-## Ciphertext contract
+A real OpenBao 2.7.1 Transit roundtrip, context rejection, key rotation and token revocation are verified locally. AWS and GCP are protocol-tested only and not yet verified against cloud accounts. The Docker daemon is not running in this environment, so the image build has not completed locally; CI runs the Docker build.
 
-Each encryption draws 56 bytes from the CSPRNG: a 32-byte DEK, a 12-byte data nonce and a 12-byte wrapping nonce. AES-256-GCM uses a 128-bit tag. Every write gets a fresh DEK; there is no plaintext DEK cache.
-
-The AAD is a UTF-8 JSON array: `["strongroom-poc",1,tenantId,recordId,purpose]`. Data encryption and DEK wrapping bind the same AAD; a decrypting caller must supply the expected context and must not trust only the tenant column in the database. Context is integrity binding, not caller authorization, and must not contain secrets.
-
-The envelope contains `version`, `algorithm`, `keyId`, `nonce`, `wrappedKey` and `ciphertext`. Binary fields use canonical base64url without padding; the GCM tag is appended to the ciphertext; wrappedKey is wrapping nonce + encrypted DEK + tag. The format is for the POC only and is not an existing public standard.
-
-Rust protects the temporary DEK with Zeroizing, and TS clears the byte buffers it controls; both still have JSON strings, host/Wasm data copies and runtime-managed memory, so they cannot guarantee that every plaintext copy is erased immediately.
-
-## Method and limitations
-
-- Core tests: 128 B, 1 KiB, 16 KiB; each sample is one encrypt + decrypt, including RNG, JSON, base64 and two simulated KMS wrap/unwrap calls. Three independent process runs, rotating test order.
-- The no-delay scenario warms up 100 times; scenarios where each simulated KMS call waits 10 ms or 50 ms warm up 5 times. The delay is a timer, with no DNS, TLS, cloud authentication, rate limiting or real KMS cost.
-- Local workerd: socketless handler tests completed. Each roundtrip includes the encrypt / decrypt Request/Response, and each batch measurement includes a final 1 ms timer to match the Workers clock behaviour. There is no HTTP transport; the numbers are batch averages, not per-request p50/p95.
-- Additional HTTP script: Miniflare/workerd, loopback HTTP, 128 B, concurrency 1 and 8; each roundtrip is two HTTP requests. This run did not complete because the sandbox forbade listen.
-- Latency reports p50/p95 per run; the report tables take the median of three runs and are not a global service SLO.
-- Memory is whole-process peak RSS: Wasm is measured inside Node, including V8; the native Rust CLI needs no V8. This does not prove a Workers isolate saves memory in the same proportion. Wasm linear memory is listed separately as raw data and cannot stand in for total memory.
-- CPU is process resource accounting, including startup and warmup; it is not Cloudflare billed CPU time. Module initialization inside Node and starting a local workerd are not production cold starts either.
-- These results compare these two implementations and their libraries. Web Crypto is implemented by the host; the Wasm RustCrypto build uses a portable implementation. Rust / Wasm could instead call the host's Web Crypto; that is a different design still to be measured.
-- Artifact sizes list the JS bundle, Wasm and native binary separately, and do not compare compressed Wasm with uncompressed JS.
-- No deployment or cross-cloud networking was tested on production Cloudflare, GCP, GKE, AWS, Render or Railway, and there is no end-to-end validation against a real KMS.
-
-Results: [POC comparison report](results/REPORT.md), [core raw data](results/benchmark.json), [workerd raw data](results/workerd.json), [HTTP test status](results/workers.json). Both Workers configurations passed Wrangler deploy --dry-run.
-
-## Next steps toward a product
-
-Keep the shareable Rust domain core, but abstract KMS as an asynchronous wrap/unwrap provider, then implement AWS SigV4, Google OAuth / workload identity, Vault / OpenBao authentication and HTTP transport separately. Native and Workers differ in HTTP, timers and credential acquisition; a cloud SDK that compiles for native Rust does not necessarily work on `wasm32-unknown-unknown`.
-
-Production acceptance also needs: tenant authorization, rotatable service identities, no sensitive data in logs, KMS timeout / retry / rate limiting, durable auditing, versioned key routing, recovery for old data and backups, and real integration tests for every deployment platform and KMS combination. Complete one real flow with an AWS sandbox KMS first, then add providers.
-
-References: [Workers Rust](https://developers.cloudflare.com/workers/languages/rust/), [workers-rs](https://github.com/cloudflare/workers-rs), [Workers Wasm](https://developers.cloudflare.com/workers/runtime-apis/webassembly/javascript/), [Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/), [RustCrypto AES-GCM](https://docs.rs/aes-gcm/0.10.3/aes_gcm/), [envelope encryption](https://docs.cloud.google.com/kms/docs/envelope-encryption).
+Documentation: [architecture](docs/architecture.md), [configuration](docs/configuration.md), [deployment](docs/deployment.md), [security boundaries](docs/security.md), [agent guide](docs/agents.md). The historical POC is kept in `poc/` with its [benchmark report](results/REPORT.md); its fixed mock key and ciphertext format are incompatible with the production core.
