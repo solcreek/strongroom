@@ -1,45 +1,103 @@
 name: CI
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
+    name: Build, test and coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-      - name: Rust and Wasm tooling
-        run: |
-          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --target wasm32-unknown-unknown
-          cargo install wasm-bindgen-cli --version 0.2.105 --locked
+      - name: Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --target wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.105
       - run: npm ci
       - run: cargo fmt --all -- --check
       - run: npm run verify
       - run: npm run deploy:check
       - run: npm run test:package
-      - name: Real OpenBao Transit integration
+      - name: Real OpenBao Transit integration and conformance
         run: |
           export TRANSIT_BIN="$(node scripts/install-transit.mjs)"
           npm run test:transit
           npm run test:live -- --provider openbao
-      - run: docker build -t strongroom:ci .
-      - run: npm run test:container
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage
           path: coverage
-  iac:
+          retention-days: 14
+      # The built host is reused by the container job, so the daemonless image matches what was tested.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: |
+            dist/server.js
+            dist/strongroom_core_bg.wasm
+          retention-days: 3
+
+  container:
+    name: Container images
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: docker/setup-buildx-action@v3
+      - name: Dockerfile build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: strongroom:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - run: npm run test:container
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Daemonless image (scripts/image.mjs) runs the same contract
+        run: |
+          crane registry serve --address 127.0.0.1:5000 &
+          sleep 1
+          node scripts/image.mjs --repository 127.0.0.1:5000/strongroom --platforms linux/amd64 > image.json
+          cat image.json
+          docker pull "$(node -p "require('./image.json').images[0]")"
+          STRONGROOM_TEST_IMAGE="$(node -p "require('./image.json').images[0]")" npm run test:container
+
+  iac:
+    name: Deployment modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: opentofu/setup-opentofu@v1
         with:
           tofu_version: 1.12.6
-      - name: Format and validate deployment modules
+      - name: Format and validate
         run: |
           tofu fmt -check -recursive deploy/terraform
           for m in deploy/terraform/*/; do tofu -chdir="$m" init -backend=false -input=false && tofu -chdir="$m" validate; done
