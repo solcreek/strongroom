@@ -231,6 +231,12 @@ async function endToEnd(keys, deniedKeys, cleanup) {
     await check('node-decrypt', 'OK', async () => { if (await host.decrypt({ envelope, context }) !== `live-${key}-🔑`) throw new Error('mismatch'); });
     await check('worker-decrypt-wrong-context', 'DECRYPT_FAILED', () => worker.decrypt({ envelope, context: { ...context, purpose: 'other' } }));
   }
+  // The agent-facing CLI probe against the Worker, per provider: real KMS, token grants and context binding.
+  for (const key of Object.keys(keys).filter(k => !deniedKeys.includes(k))) {
+    const child = spawn(process.execPath, ['packages/strongroom/src/cli.ts', 'probe', '--key', key, '--tenant', 'live'], { env: { ...env, STRONGROOM_URL: String(await mf.ready), STRONGROOM_TOKEN: token }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = ''; child.stdout.on('data', b => out += b); const [code] = await once(child, 'close');
+    results.push({ name: `${key}:cli-probe`, expect: 'OK', observed: code === 0 && JSON.parse(out).ok ? 'OK' : `EXIT_${code}` });
+  }
   // The Node host writes operator events to stderr: denied grants must be logged with sanitized upstream facts only.
   for (const key of deniedKeys) await outcome(() => host.encrypt({ key, context, plaintext: 'x' }));
   await new Promise(r => setTimeout(r, 100));
