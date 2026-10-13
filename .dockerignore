@@ -1,0 +1,15 @@
+.git
+.cache
+node_modules
+target
+**/target
+**/pkg
+dist
+packages/strongroom/dist
+.strongroom
+.env*
+.dev.vars*
+.wrangler
+coverage
+results
+poc

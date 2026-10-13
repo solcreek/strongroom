@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strongroom
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: strongroom }
+  template:
+    metadata:
+      labels: { app: strongroom }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: strongroom
+          image: YOUR_REGISTRY/strongroom:YOUR_VERSION
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: STRONGROOM_CONFIG
+              valueFrom:
+                secretKeyRef: { name: strongroom, key: config }
+            - name: STRONGROOM_ALLOW_LOCAL
+              value: "false"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: strongroom
+spec:
+  selector: { app: strongroom }
+  ports: [{ port: 80, targetPort: 8080 }]
+  type: ClusterIP
