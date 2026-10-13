@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      dev-tooling: { dependency-type: development }
+  - package-ecosystem: cargo
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: terraform
+    directories: [/deploy/terraform/aws-ecs-express, /deploy/terraform/gcp-cloud-run]
+    schedule: { interval: weekly }
