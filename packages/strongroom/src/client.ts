@@ -33,7 +33,7 @@ export class Strongroom {
     try {
       const response = await this.#fetch(new URL(path, this.#url), { method: input === undefined ? 'GET' : 'POST',
         headers: { authorization: `Bearer ${this.#token}`, ...(input === undefined ? {} : { 'content-type': 'application/json' }) },
-        ...(input === undefined ? {} : { body: JSON.stringify(input) }), redirect: 'error', signal });
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }), redirect: 'manual', signal });
       const reader = response.body?.getReader();
       if (!reader) throw new StrongroomError('INVALID_RESPONSE', 'Service returned an invalid response.', response.status);
       const chunks: Uint8Array[] = []; let size = 0;

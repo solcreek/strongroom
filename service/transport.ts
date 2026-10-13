@@ -5,7 +5,7 @@ export async function kmsJson(fetcher: Fetch, url: string | Request, init: Reque
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetcher(url, { ...init, redirect: 'error', signal: controller.signal });
+    const response = await fetcher(url, { ...init, redirect: 'manual', signal: controller.signal });
     if (!response.ok) {
       await response.body?.cancel();
       if (decrypt && [400, 422].includes(response.status)) throw decryptFailed();

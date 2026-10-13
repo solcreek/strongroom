@@ -25,10 +25,10 @@ const help = {
 };
 function fail(message: string): never { throw new StrongroomError('INVALID_INPUT', message); }
 async function readInput(file?: string): Promise<unknown> {
-  let value: string;
+  let bytes: Buffer;
   if (file && file !== '-') {
     if ((await stat(file)).size > 524288) fail('Input exceeds 524288 bytes.');
-    value = await readFile(file, 'utf8');
+    bytes = await readFile(file);
   } else {
     if (process.stdin.isTTY) fail('Provide JSON on stdin or --input FILE. Run schema for input definitions.');
     const parts: Buffer[] = []; let length = 0;
@@ -36,9 +36,11 @@ async function readInput(file?: string): Promise<unknown> {
       const bytes = Buffer.from(chunk); length += bytes.length;
       if (length > 524288) fail('Input exceeds 524288 bytes.'); parts.push(bytes);
     }
-    value = Buffer.concat(parts).toString('utf8');
+    bytes = Buffer.concat(parts);
   }
-  try { return JSON.parse(value); } catch { fail('Input must be valid JSON. Run schema for input definitions.'); }
+  if (bytes.length > 524288) fail('Input exceeds 524288 bytes.');
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { fail('Input must be valid UTF-8 JSON. Run schema for input definitions.'); }
 }
 async function initialize(directory: string) {
   const dir = resolve(directory);
@@ -77,9 +79,10 @@ async function main() {
     case 'capabilities': result = { ...capabilities, cli: help }; break;
     case 'init': result = await initialize(options['--directory'] ?? '.strongroom'); break;
     case 'config-check': {
+      const serialized = options['--input'] ? JSON.stringify(await readInput(options['--input'])) : process.env.STRONGROOM_CONFIG;
       let c;
-      try { c = parseConfig({ ...process.env, ...(options['--input'] ? { STRONGROOM_CONFIG: JSON.stringify(await readInput(options['--input'])) } : {}) }); }
-      catch { throw new StrongroomError('INVALID_CONFIG', 'Configuration is invalid. Check the documented schema and local-provider opt-in.'); }
+      try { c = parseConfig({ ...process.env, STRONGROOM_CONFIG: serialized }); }
+      catch (error) { throw new StrongroomError('INVALID_CONFIG', error instanceof Error ? error.message : 'Configuration is invalid.'); }
       result = { valid: true, keyCount: Object.keys(c.keys).length, principalCount: c.principals.length, providers: [...new Set(Object.values(c.keys).map(v => v.provider))] }; break;
     }
     case 'encrypt': case 'decrypt': case 'doctor': {
