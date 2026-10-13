@@ -6,3 +6,11 @@ poc/rust/pkg/
 .wrangler/
 .dev.vars
 .env
+crates/core/pkg/
+packages/strongroom/dist/
+coverage/
+.env.*
+!.env.example
+.dev.vars.*
+!.dev.vars.example
+.strongroom/
