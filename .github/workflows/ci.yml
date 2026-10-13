@@ -78,7 +78,7 @@ jobs:
         with:
           name: dist
           path: dist
-      - uses: imjasonh/setup-crane@v0.4
+      - uses: imjasonh/setup-crane@v0.7
       - name: Daemonless image (scripts/image.mjs) runs the same contract
         run: |
           crane registry serve --address 127.0.0.1:5000 &
