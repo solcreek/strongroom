@@ -29,7 +29,8 @@
     "test:live": "node scripts/test-live.mjs",
     "test:package": "node scripts/test-package.mjs",
     "test:container": "node scripts/test-container.mjs",
-    "image": "node scripts/image.mjs"
+    "image": "node scripts/image.mjs",
+    "release:check": "node scripts/release-check.mjs"
   },
   "overrides": {
     "undici": "^7.29.1",

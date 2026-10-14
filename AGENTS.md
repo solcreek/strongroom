@@ -12,5 +12,6 @@ Strongroom encrypts recoverable API credentials, not account login passwords. Th
 - Keep secrets off CLI arguments. Use stdin/files/environment. Preserve JSON-only stdout, JSON errors on stderr, documented exit codes and bounded inputs.
 - Context is authenticated metadata, not authorization. Check tenant, operation and configured key grants before KMS access. Never resolve provider URLs or KMS key IDs from caller input.
 - Each envelope gets a fresh host CSPRNG DEK and nonce. No caller-supplied entropy, hardcoded wrapping keys, or automatic fallback from KMS to local mode.
+- Releases are tag-driven npm trusted publishing (`docs/releasing.md`); never add an npm token. Version bumps touch package.json, `capabilities.version` and the crate together.
 - Keep commits small and atomic. Update relevant docs and tests in the same change. Commit often. Publishing or deployment is separate from local verification.
 - Do not commit `.strongroom`, `.env*`, `.dev.vars*`, credential files, generated Wasm, coverage or `node_modules`.

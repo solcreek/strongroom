@@ -83,7 +83,7 @@ Coverage gate: lines, statements and functions ≥90% and branches ≥80% for th
 
 On 2026-10-13, AWS KMS (least-privilege IAM user), Google Cloud KMS (service account and ADC) and a local OpenBao 2.7.1 were verified with real accounts: roundtrips, context rejection, permission denial, missing or disabled keys and bad credentials all ran through workerd and the Node host. Real error responses are recorded in `tests/fixtures/kms/` and replayed one by one by the offline tests; `npm run test:live` detects provider behaviour drift. See [KMS testing](docs/testing.md). The Docker daemon is not running in this environment, so the image build has not completed locally; CI runs the Docker build.
 
-Documentation: [architecture](docs/architecture.md), [configuration](docs/configuration.md), [KMS testing](docs/testing.md), [deployment](docs/deployment.md), [security boundaries](docs/security.md), [agent guide](docs/agents.md). The historical POC is kept in `poc/` with its [benchmark report](results/REPORT.md); its fixed mock key and ciphertext format are incompatible with the production core.
+Documentation: [architecture](docs/architecture.md), [configuration](docs/configuration.md), [KMS testing](docs/testing.md), [deployment](docs/deployment.md), [security boundaries](docs/security.md), [agent guide](docs/agents.md), [releasing](docs/releasing.md). The historical POC is kept in `poc/` with its [benchmark report](results/REPORT.md); its fixed mock key and ciphertext format are incompatible with the production core.
 
 ## License and security
 

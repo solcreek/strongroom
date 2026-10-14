@@ -1,0 +1,46 @@
+name: Release
+# Publishes the strongroom npm package with npm trusted publishing (OIDC): no npm token is stored anywhere.
+# npmjs.com trusts exactly this workflow file in solcreek/strongroom, running in the `npm` environment.
+# Trigger: push a tag vX.Y.Z[-pre.N] that matches every version in the repo (scripts/release-check.mjs).
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # the OIDC token npm exchanges for a short-lived publish credential
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1.
+      - run: npm install --global npm@11
+      - name: Version gate
+        id: gate
+        run: echo "dist-tag=$(node scripts/release-check.mjs "$GITHUB_REF_NAME" | node -p 'JSON.parse(require("fs").readFileSync(0)).distTag')" >> "$GITHUB_OUTPUT"
+      - name: Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
+      - name: wasm-bindgen version
+        id: bindgen
+        run: echo "version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+      - run: npm ci
+      - run: npm run verify
+      - run: npm run test:package
+      # Provenance is attached automatically for trusted publishing from a public repository.
+      - name: Publish
+        run: npm publish ./packages/strongroom --access public --tag "${{ steps.gate.outputs.dist-tag }}"
