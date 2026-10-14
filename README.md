@@ -4,7 +4,7 @@
 
 Protect user-supplied API keys with a managed KMS. Your database stores only encrypted envelopes; when you need to call a third-party service, an authorized Strongroom service decrypts them.
 
-This is the **0.1.0-alpha.1 development release**. Rust owns AES-256-GCM and the ciphertext format, and Cloudflare Workers is the primary target; containers run the same Rust Wasm and HTTP handler on a Node 24 host. The public npm version is still the name-reserving `0.0.0`; the commands below use a local build and neither publish nor deploy anything.
+This is the **0.1.0-alpha.1 development release**. Rust owns AES-256-GCM and the ciphertext format, and Cloudflare Workers is the primary target; containers run the same Rust Wasm and HTTP handler on a Node 24 host. The SDK and CLI are on npm as `strongroom@alpha` (with provenance); `latest` is still the name-reserving `0.0.0` until a stable release. The local development commands below neither publish nor deploy anything.
 
 - KMS: AWS KMS, Google Cloud KMS, Vault, OpenBao Transit.
 - HTTP: `POST /v1/encrypt`, `POST /v1/decrypt`, with fixed tenant, operation and key authorization.
@@ -47,8 +47,8 @@ Plaintext and tokens never need to appear in CLI flags. `--output` creates a 060
 With a signed-in `aws` CLI, this creates a KMS key and a least-privilege IAM user, writes a complete `STRONGROOM_CONFIG` and a caller token to `.strongroom/aws-strongroom/`, and verifies them with a real Encrypt/Decrypt:
 
 ```sh
-node packages/strongroom/dist/cli.js setup aws --tenant acme --dry-run   # plan and required IAM permissions
-node packages/strongroom/dist/cli.js setup aws --tenant acme
+npx strongroom@alpha setup aws --tenant acme --dry-run   # plan and required IAM permissions
+npx strongroom@alpha setup aws --tenant acme
 ```
 
 `teardown aws` reverses it. See the [agent runbook](docs/agents.md#install-strongroom-on-aws-agent-runbook).
@@ -56,7 +56,7 @@ node packages/strongroom/dist/cli.js setup aws --tenant acme
 ## Application integration
 
 ```ts
-import { Strongroom } from 'strongroom'; // the package produced by a local npm pack
+import { Strongroom } from 'strongroom'; // npm install strongroom@alpha
 
 const strongroom = new Strongroom({
   url: process.env.STRONGROOM_URL!,

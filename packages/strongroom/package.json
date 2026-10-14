@@ -7,7 +7,7 @@
   "main": "./dist/index.js",
   "types": "./dist/client.d.ts",
   "exports": { ".": { "types": "./dist/client.d.ts", "import": "./dist/index.js" } },
-  "bin": { "strongroom": "./dist/cli.js" },
+  "bin": { "strongroom": "dist/cli.js" },
   "author": "linyiru",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/solcreek/strongroom.git", "directory": "packages/strongroom" },
