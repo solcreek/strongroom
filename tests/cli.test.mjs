@@ -3,17 +3,9 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, stat, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { runCli } from './cli-helper.mjs';
 import { createHash } from 'node:crypto';
-const cli = resolve('packages/strongroom/src/cli.ts');
-export async function runCli(args, { input = '', env = {} } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, ...args], { env: { ...process.env, STRONGROOM_TOKEN: '', STRONGROOM_URL: '', STRONGROOM_TOKEN_FILE: '', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '';
-    child.stdout.on('data', b => stdout += b); child.stderr.on('data', b => stderr += b);
-    child.on('error', reject); child.on('close', code => resolve({ code, stdout, stderr })); child.stdin.on('error', () => {}); child.stdin.end(input);
-  });
-}
 test('CLI discovery is JSON and needs no credentials or network', async () => {
   for (const args of [[], ['--help'], ['--version'], ['capabilities'], ['schema'], ['schema', 'encrypt'], ['schema', 'decrypt']]) {
     const r = await runCli(args); assert.equal(r.code, 0, r.stderr); assert.doesNotThrow(() => JSON.parse(r.stdout)); assert.equal(r.stderr, '');
