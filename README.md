@@ -13,11 +13,11 @@ This is the **0.1.0-alpha.1 development release**. Rust owns AES-256-GCM and the
 
 ## Run locally
 
-Requires Node 24, Rust 1.98.1, the Wasm target and wasm-bindgen CLI 0.2.105.
+Requires Node 24, Rust 1.98.1, the Wasm target, and the wasm-bindgen CLI at the same version as the wasm-bindgen crate in `Cargo.lock` (the build checks this).
 
 ```sh
 rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.105 --locked
+cargo install wasm-bindgen-cli --locked --version "$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)"
 npm ci
 npm run build
 npm run dev:init

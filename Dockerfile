@@ -1,7 +1,9 @@
 FROM rust:1.98.1-bookworm AS crypto
 WORKDIR /build
-RUN rustup target add wasm32-unknown-unknown && cargo install wasm-bindgen-cli --version 0.2.105 --locked
 COPY Cargo.toml Cargo.lock ./
+# The CLI must match the wasm-bindgen crate in Cargo.lock exactly.
+RUN rustup target add wasm32-unknown-unknown && \
+    cargo install wasm-bindgen-cli --locked --version "$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)"
 COPY crates/core crates/core
 RUN cargo build --locked --release --target wasm32-unknown-unknown -p strongroom-core && \
     wasm-bindgen target/wasm32-unknown-unknown/release/strongroom_core.wasm --target web --out-dir crates/core/pkg

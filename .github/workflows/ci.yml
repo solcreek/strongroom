@@ -24,9 +24,13 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --target wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      # The CLI must match the wasm-bindgen crate exactly; take its version from Cargo.lock so dependency bumps stay consistent.
+      - name: wasm-bindgen version
+        id: bindgen
+        run: echo "version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)" >> "$GITHUB_OUTPUT"
       - uses: taiki-e/install-action@v2
         with:
-          tool: wasm-bindgen@0.2.105
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
       - run: npm ci
       - run: cargo fmt --all -- --check
       - run: npm run verify
