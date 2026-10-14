@@ -2,18 +2,10 @@
 // operator's own AWS CLI session, then write a complete STRONGROOM_CONFIG. Built for agents: a --dry-run plan,
 // stable error codes with a `next` command, `created` resources on partial failure, and an exact inverse.
 import { execFile } from 'node:child_process';
-import { mkdir, writeFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { randomBytes, createHash } from 'node:crypto';
-import { StrongroomError } from './client.ts';
-import { parseConfig } from '../../../service/config.ts';
-import { createProvider } from '../../../service/providers.ts';
+import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey } from './setup-common.ts';
+export { SetupError } from './setup-common.ts';
 
-export class SetupError extends StrongroomError {
-  details: Record<string, unknown>;
-  constructor(code: string, message: string, status: number, details: Record<string, unknown> = {}) { super(code, message, status); this.details = details; }
-  toJSON() { return { ...super.toJSON(), ...this.details }; }
-}
 // What the operator running setup needs; printed by --dry-run and on AWS_PERMISSION_DENIED.
 export const requiredPermissions = {
   user: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetUser', 'iam:CreateUser', 'iam:TagUser', 'iam:PutUserPolicy', 'iam:CreateAccessKey'],
@@ -58,7 +50,7 @@ export async function setupAws(options: Record<string, string>) {
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) throw new SetupError('INVALID_INPUT', '--name must match ^[A-Za-z0-9_-]{1,32}$; it names the KMS alias and IAM user.', 0, { path: '--name' });
   if (!tenantId) throw new SetupError('INVALID_INPUT', 'setup aws requires --tenant TENANT for the first principal.', 0, { path: '--tenant' });
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(keyRef)) throw new SetupError('INVALID_INPUT', '--key must match ^[A-Za-z0-9_-]{1,64}$.', 0, { path: '--key' });
-  if (await stat(directory).then(() => true, () => false)) throw new SetupError('INVALID_INPUT', 'The output directory already exists; secrets are never overwritten.', 0, { path: '--directory', next: 'Choose a new --directory.' });
+  await assertNewDirectory(directory);
   const aws = cli(o);
   if (!o.region) {
     o.region = await new Promise<string>(r => execFile('aws', ['configure', 'get', 'region', ...(o.profile ? ['--profile', o.profile] : [])], (e, out) => r(e ? '' : out.trim())));
@@ -106,50 +98,17 @@ export async function setupAws(options: Record<string, string>) {
       created.push({ accessKeyId: access.AccessKeyId });
       key = { provider: 'aws', region: o.region, keyId: keyArn, accessKeyId: access.AccessKeyId, secretAccessKey: access.SecretAccessKey };
     }
-    const token = randomBytes(32).toString('base64url'), tokenSha256 = createHash('sha256').update(token).digest('hex');
-    const config = { keys: { [keyRef]: key }, principals: [{ tokenSha256, tenantId, permissions: ['encrypt', 'decrypt'], keys: [keyRef] }] };
-    parseConfig({ STRONGROOM_CONFIG: JSON.stringify(config) });
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    const secret = { mode: 0o600, flag: 'wx' } as const;
-    await writeFile(resolve(directory, 'config.json'), JSON.stringify(config, null, 2) + '\n', secret);
-    await writeFile(resolve(directory, 'token'), token + '\n', secret);
-    await writeFile(resolve(directory, '.gitignore'), '*\n', secret);
+    const { files, principal } = await writeSetup(directory, keyRef, key, tenantId);
     const verified = o.role ? { ok: false, skipped: 'role credentials exist only inside ECS/EKS; run strongroom probe after deploying' }
-      : skipVerify ? { ok: false, skipped: '--no-verify' } : await verify(key);
+      : skipVerify ? { ok: false, skipped: '--no-verify' } : await verifyKey(key, 60000);
     return { ...base, plan: undefined, keyArn, alias, identity: o.role ? { type: 'iam-role', role: o.role } : { type: 'iam-user', user: name, accessKeyId: (key as { accessKeyId: string }).accessKeyId },
-      files: { config: resolve(directory, 'config.json'), token: resolve(directory, 'token') }, principal: { tenantId, keys: [keyRef], tokenSha256 }, verified,
-      next: [
-        `strongroom config-check --input ${resolve(directory, 'config.json')}`,
-        `Workers: npx wrangler secret put STRONGROOM_CONFIG < ${resolve(directory, 'config.json')}`,
-        `Local: STRONGROOM_CONFIG="$(cat ${resolve(directory, 'config.json')})" node dist/server.js`,
-        `Then: STRONGROOM_URL=<service origin> STRONGROOM_TOKEN_FILE=${resolve(directory, 'token')} strongroom probe --key ${keyRef} --tenant ${tenantId}`,
-      ], teardown: cleanup };
+      files, principal, verified, next: nextSteps(files, keyRef, tenantId), teardown: cleanup };
   } catch (e) {
     const error = e instanceof SetupError ? e : new SetupError('SETUP_FAILED', 'Setup failed after creating resources.', 0);
     error.details = { ...error.details, created, cleanup: created.length ? cleanup : undefined };
     throw error;
   }
 }
-// New IAM credentials take seconds to propagate; retry only denial-shaped failures, for up to a minute.
-async function verify(key: Record<string, unknown>) {
-  const provider = createProvider(key as never), started = Date.now();
-  const aad = new TextEncoder().encode('["strongroom-setup",1]');
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const dek = crypto.getRandomValues(new Uint8Array(32));
-      const back = await provider.unwrap(await provider.wrap(dek, aad), aad);
-      if (back.some((b, i) => b !== dek[i])) throw new SetupError('VERIFY_FAILED', 'Decrypted key differs.', 0);
-      return { ok: true, attempts: attempt, ms: Date.now() - started };
-    } catch (e) {
-      const code = (e as { code?: string }).code;
-      if (code !== 'KMS_ACCESS_DENIED' || Date.now() - started > 60000) {
-        return { ok: false, attempts: attempt, ms: Date.now() - started, code: code ?? 'VERIFY_FAILED', next: 'Files were written; retry later with strongroom probe after deploying, or inspect the key policy.' };
-      }
-      await new Promise(r => setTimeout(r, 3000));
-    }
-  }
-}
-
 export async function teardownAws(options: Record<string, string>) {
   const name = options['--name'] ?? 'strongroom', role = options['--role-name'];
   const o: Options = { name, region: options['--region'], profile: options['--profile'], role };
