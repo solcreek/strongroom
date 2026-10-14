@@ -6,7 +6,7 @@
 
 | Layer | Setting |
 | --- | --- |
-| npmjs.com | Package `strongroom` trusts repository `solcreek/strongroom`, workflow file `release.yml`, environment `npm` |
+| npmjs.com | Package `strongroom` trusts repository `solcreek/strongroom`, workflow file `release.yml`, environment `npm`; permissions `publish, stage publish` (created 2026-10-13, `npm trust list strongroom`) |
 | GitHub environment `npm` | Deployments only from tags matching `v*` |
 | Tag ruleset "release tags are immutable" | `v*` tags cannot be moved or deleted after they are pushed |
 | Workflow | `id-token: write` only on the publish job; version gate, full `npm run verify` and `npm run test:package` before `npm publish` |
@@ -15,7 +15,7 @@ Renaming `release.yml`, the environment or the repository breaks publishing unti
 
 ## One-time setup (owner, interactive)
 
-Trusted publisher configuration requires an npm account owner with 2FA, in a browser:
+Trusted publisher configuration requires an npm account owner with 2FA. A non-interactive shell cannot complete the browser flow (`EOTP`); pass a one-time password with `--otp`, for example from 1Password: `--otp="$(op item get ITEM --otp)"`.
 
 ```sh
 npm trust github strongroom --file release.yml --repository solcreek/strongroom --environment npm --allow-publish --yes
