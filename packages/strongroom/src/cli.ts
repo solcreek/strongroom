@@ -5,6 +5,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { Strongroom, StrongroomError } from './client.ts';
 import { openapi, schemas, capabilities } from '../../../service/contract.ts';
 import { ConfigError, parseConfig } from '../../../service/config.ts';
+import { setupAws, teardownAws } from './setup-aws.ts';
 
 const help = {
   name: 'strongroom', version: capabilities.version, nonInteractive: true,
@@ -17,9 +18,11 @@ const help = {
     probe: 'Roundtrip a random synthetic value through the service with --key KEY --tenant TENANT: encrypt, decrypt, and confirm a changed context is rejected. Exercises the token grants and the real KMS; nothing is stored.',
     'config-check': 'Validate STRONGROOM_CONFIG or JSON from --input FILE; no secrets returned.',
     init: 'Create random LOCAL DEVELOPMENT keys and tokens in --directory DIR (default .strongroom), with private file permissions.',
+    'setup aws': 'Create (or reuse) KMS alias/NAME and a least-privilege IAM user, or grant --role-name, using your aws CLI session; write a complete STRONGROOM_CONFIG and a caller token to a new private --directory; verify with a real Encrypt/Decrypt. Requires --tenant. Use --dry-run first: it prints the plan and the IAM permissions you need.',
+    'teardown aws': 'Inverse of setup aws: delete the IAM user and its access keys (or the role policy). The KMS key is kept unless --delete-key, which schedules deletion in 7 days.',
     token: 'Write a new random bearer token to a NEW --token-file FILE (mode 0600); return its SHA-256 digest, and a principal entry when --tenant and --keys are given.',
   },
-  flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'token: principal tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--key': 'probe: key reference', '--envelope': 'decrypt: file holding {envelope} or an envelope', '--record': 'probe: recordId (default strongroom-probe)', '--help': 'This JSON document', '--version': 'JSON version' },
+  flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'token: principal tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--key': 'probe and setup: key reference (setup default primary)', '--name': 'setup/teardown: KMS alias and IAM user name (default strongroom)', '--region': 'setup/teardown: AWS region (default: profile region)', '--profile': 'setup/teardown: aws CLI profile', '--role-name': 'setup/teardown: existing ECS task / EKS pod role to grant instead of creating a user', '--dry-run': 'setup: print the plan only (no value)', '--delete-key': 'teardown: also schedule KMS key deletion (no value)', '--no-verify': 'setup: skip the live Encrypt/Decrypt check (no value)', '--envelope': 'decrypt: file holding {envelope} or an envelope', '--record': 'probe: recordId (default strongroom-probe)', '--help': 'This JSON document', '--version': 'JSON version' },
   environment: ['STRONGROOM_URL', 'STRONGROOM_TOKEN', 'STRONGROOM_TOKEN_FILE', 'STRONGROOM_CLOUD_RUN_ID_TOKEN (Cloud Run invoker IAM, e.g. $(gcloud auth print-identity-token))'],
   output: { success: 'One JSON object on stdout, or --output FILE.', error: 'One JSON error object on stderr. No stack traces.' },
   exitCodes: { '0': 'success', '2': 'input/configuration error', '3': 'authentication/authorization error', '4': 'request/decryption rejected', '5': 'retryable network/provider error', '6': 'service KMS credentials or key need operator action; do not retry unchanged', '1': 'other failure' },
@@ -104,11 +107,13 @@ async function main() {
   const command = argv.shift()!;
   const options: Record<string, string> = {};
   let schemaName: string | undefined;
-  if (command === 'schema' && argv[0] && !argv[0].startsWith('--')) schemaName = argv.shift();
-  const allowed = command === 'init' ? ['--directory', '--output'] : command === 'token' ? ['--token-file', '--tenant', '--keys', '--permissions', '--output'] : command === 'probe' ? ['--key', '--tenant', '--record', '--output'] : command === 'decrypt' ? ['--input', '--output', '--envelope'] : ['encrypt', 'config-check'].includes(command) ? ['--input', '--output'] : ['--output'];
+  if (['schema', 'setup', 'teardown'].includes(command) && argv[0] && !argv[0].startsWith('--')) schemaName = argv.shift();
+  const booleans = ['--dry-run', '--delete-key', '--no-verify'];
+  const allowed = command === 'setup' ? ['--name', '--tenant', '--key', '--region', '--profile', '--role-name', '--directory', '--dry-run', '--no-verify', '--output'] : command === 'teardown' ? ['--name', '--region', '--profile', '--role-name', '--delete-key', '--output'] : command === 'init' ? ['--directory', '--output'] : command === 'token' ? ['--token-file', '--tenant', '--keys', '--permissions', '--output'] : command === 'probe' ? ['--key', '--tenant', '--record', '--output'] : command === 'decrypt' ? ['--input', '--output', '--envelope'] : ['encrypt', 'config-check'].includes(command) ? ['--input', '--output'] : ['--output'];
   while (argv.length) {
     const flag = argv.shift()!;
     if (!allowed.includes(flag) || Object.hasOwn(options, flag)) fail('Unknown or repeated option. Run --help.');
+    if (booleans.includes(flag)) { options[flag] = 'true'; continue; }
     const value = argv.shift(); if (!value || value.startsWith('--')) fail('Option requires a value.'); options[flag] = value;
   }
   let result: unknown;
@@ -119,6 +124,9 @@ async function main() {
     case 'capabilities': result = { ...capabilities, cli: help }; break;
     case 'init': result = await initialize(options['--directory'] ?? '.strongroom'); break;
     case 'token': result = await createToken(options); break;
+    case 'setup': case 'teardown':
+      if (schemaName !== 'aws') fail(`Usage: strongroom ${command} aws ... (providers: aws). Run --help.`);
+      result = command === 'setup' ? await setupAws(options) : await teardownAws(options); break;
     case 'config-check': {
       const serialized = options['--input'] ? JSON.stringify(await readInput(options['--input'])) : process.env.STRONGROOM_CONFIG;
       let c;
@@ -160,5 +168,5 @@ try {
 } catch (error) {
   const e = error instanceof StrongroomError ? error : new StrongroomError('IO_ERROR', 'File operation failed; verify paths, permissions, and that output does not already exist.');
   process.stderr.write(JSON.stringify({ error: e.toJSON() }) + '\n');
-  process.exitCode = e.retryable ? 5 : ['KMS_ACCESS_DENIED', 'KMS_KEY_UNAVAILABLE', 'NOT_CONFIGURED'].includes(e.code) ? 6 : ['INVALID_INPUT', 'INVALID_CONFIG', 'IO_ERROR'].includes(e.code) ? 2 : [401, 403].includes(e.status) ? 3 : e.status >= 400 && e.status < 500 ? 4 : 1;
+  process.exitCode = e.retryable ? 5 : ['KMS_ACCESS_DENIED', 'KMS_KEY_UNAVAILABLE', 'NOT_CONFIGURED'].includes(e.code) ? 6 : ['INVALID_INPUT', 'INVALID_CONFIG', 'IO_ERROR', 'AWS_CLI_MISSING', 'AWS_PROFILE_NOT_FOUND', 'RESOURCE_EXISTS', 'KEY_UNUSABLE'].includes(e.code) ? 2 : [401, 403].includes(e.status) ? 3 : e.status >= 400 && e.status < 500 ? 4 : 1;
 }

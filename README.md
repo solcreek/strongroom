@@ -42,6 +42,17 @@ printf '%s' '{"key":"primary","plaintext":"demo-api-key","context":{"tenantId":"
 
 Plaintext and tokens never need to appear in CLI flags. `--output` creates a 0600 file and refuses to overwrite; without it, one JSON value goes to stdout. Errors are one JSON value on stderr, and exit codes distinguish input, authorization, rejection and transient failures.
 
+## Production key in one command (AWS)
+
+With a signed-in `aws` CLI, this creates a KMS key and a least-privilege IAM user, writes a complete `STRONGROOM_CONFIG` and a caller token to `.strongroom/aws-strongroom/`, and verifies them with a real Encrypt/Decrypt:
+
+```sh
+node packages/strongroom/dist/cli.js setup aws --tenant acme --dry-run   # plan and required IAM permissions
+node packages/strongroom/dist/cli.js setup aws --tenant acme
+```
+
+`teardown aws` reverses it. See the [agent runbook](docs/agents.md#install-strongroom-on-aws-agent-runbook).
+
 ## Application integration
 
 ```ts

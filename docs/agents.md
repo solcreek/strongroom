@@ -34,6 +34,35 @@ The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FI
 
 `strongroom doctor` checks configuration readiness and API version only. `strongroom probe --key KEY --tenant TENANT` exercises the token's grants and the real KMS: it encrypts a random synthetic value, decrypts it, and confirms that a changed context is rejected, reporting per-step latency. Nothing is stored. A failing step keeps the service's error code and exit code (`probe step decrypt failed: …`), so `KMS_ACCESS_DENIED` exits 6 and an encrypt-only token exits 3 at the decrypt step. `config-check` validates local server configuration without printing credentials or making network calls.
 
+## Install Strongroom on AWS (agent runbook)
+
+`strongroom setup aws` turns the operator's existing `aws` CLI session into a working configuration in one non-interactive command: it creates (or reuses) the KMS key `alias/NAME`, creates a least-privilege IAM user (or grants an existing ECS task / EKS pod role with `--role-name`), writes a complete `STRONGROOM_CONFIG` plus a caller token to a new private directory, and proves the result with a real Encrypt/Decrypt. Verified against AWS on 2026-10-13 (about 20 s, of which about 12 s is IAM propagation).
+
+1. Plan. Nothing changes; the output lists every action and the IAM permissions the operator needs.
+   ```sh
+   strongroom setup aws --tenant acme --dry-run
+   ```
+2. On an error, follow `error.next` (for example `aws sso login`) or report `error.requiredPermissions` to the operator, then repeat step 1.
+3. Apply, and check `verified.ok`:
+   ```sh
+   strongroom setup aws --tenant acme
+   ```
+4. Deploy with the files named in `files` and the commands in `next` (Workers secret, container env, or the IaC modules), then run `strongroom probe --key primary --tenant acme` against the service.
+5. Undo with the `teardown` command printed by setup. The KMS key survives unless `--delete-key`, which schedules deletion after 7 days.
+
+Defaults: `--name strongroom`, `--key primary`, region from the profile, directory `.strongroom/aws-NAME`. The access key secret is written only to `config.json` (0600); stdout never contains it. AWS error text is never echoed, only its error code. Re-running never overwrites files and stops with `RESOURCE_EXISTS` if the IAM user exists; the key behind an existing alias is reused.
+
+| `error.code` | Exit | Meaning and next step |
+| --- | --- | --- |
+| `AWS_CLI_MISSING` | 2 | Install AWS CLI v2 |
+| `AWS_PROFILE_NOT_FOUND` | 2 | Fix `--profile` (`aws configure list-profiles`) |
+| `AWS_NOT_AUTHENTICATED` | 3 | `aws sso login` or `aws configure`; check `aws sts get-caller-identity` |
+| `AWS_PERMISSION_DENIED` | 3 | The operator lacks `error.requiredPermissions`; `error.created` and `error.cleanup` list anything already made |
+| `RESOURCE_EXISTS` | 2 | Choose another `--name`, or run the suggested teardown |
+| `KEY_UNUSABLE` | 2 | `alias/NAME` points at a disabled or non-symmetric key; choose another `--name` |
+| `INVALID_INPUT` | 2 | `error.path` names the flag to fix |
+| `AWS_ERROR` | 1 | Unexpected AWS failure; `error.awsCode` and `error.operation` identify it |
+
 ## Decrypt an existing CLI result
 
 An encryption result is `{envelope}`. Decryption requires that envelope plus the context, which must come from trusted application metadata. Pass the stored file with `--envelope` and only the context on stdin:
