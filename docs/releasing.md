@@ -31,8 +31,8 @@ After the first successful trusted publish, set the package to **Require two-fac
 3. Merge to `main`, wait for CI, then tag that commit and push the tag:
 
 ```sh
-git tag -a v0.1.0-alpha.2 -m "v0.1.0-alpha.2"
-git push origin v0.1.0-alpha.2
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
 ```
 
 A prerelease (`-alpha.N`, `-beta.N`, `-rc.N`) publishes under that identifier as its dist-tag (`alpha`, `beta`, `rc`) and never moves `latest`. Install one with `npm install strongroom@alpha`. A plain `X.Y.Z` publishes to `latest`.

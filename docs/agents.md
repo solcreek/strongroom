@@ -12,7 +12,7 @@ strongroom schema encrypt
 strongroom schema decrypt
 ```
 
-Run the published CLI with `npx strongroom@alpha …` (or `npm install strongroom@alpha` for the SDK); releases carry npm provenance, which `npm audit signatures` verifies. Inside this repository, `node packages/strongroom/dist/cli.js` runs the local build.
+Run the published CLI with `npx strongroom …` (or `npm install strongroom` for the SDK); releases carry npm provenance, which `npm audit signatures` verifies. Inside this repository, `node packages/strongroom/dist/cli.js` runs the local build.
 
 The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FILE`. For a Cloud Run service with invoker IAM, also set `STRONGROOM_CLOUD_RUN_ID_TOKEN=$(gcloud auth print-identity-token)` (SDK: `cloudRunIdToken`); it travels in `X-Serverless-Authorization` so `Authorization` stays the Strongroom bearer. A non-JSON 401/403/404 from a platform in front of the service (Cloud Run IAM, a load balancer, a WAF) surfaces as `GATEWAY_REJECTED`, exit 3. Input is JSON from stdin or `--input FILE`; secrets are never CLI flags. No interactive prompt, login redirect, or automatic browser launch occurs. Responses are one JSON value on stdout. Errors are one JSON object on stderr, with a stable code, status and retryability. `--output FILE` creates a private file and refuses to overwrite any existing path, including a symlink.
 
@@ -105,4 +105,4 @@ The output file contains plaintext. Do not include it in agent transcripts, logs
 
 `Strongroom.encrypt` returns an `Envelope`; `Strongroom.decrypt` returns a string. Calls accept `{signal}` for cancellation. `StrongroomError` has `code`, `status`, `retryable`, `requestId` and `toJSON()`. The client has a 20-second default timeout and does not automatically retry encryption. Supply a custom `fetch` for Worker service bindings, tracing that excludes bodies, or platform authentication.
 
-The service does not offer autonomous agent execution or MCP in this alpha. Agent compatibility comes from explicit schemas, bounded noninteractive commands, predictable outputs and stable authorization. Adding more tools must preserve these contracts.
+The service does not offer autonomous agent execution or MCP. Agent compatibility comes from explicit schemas, bounded noninteractive commands, predictable outputs and stable authorization. Adding more tools must preserve these contracts.

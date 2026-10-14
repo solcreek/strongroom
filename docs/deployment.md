@@ -34,8 +34,8 @@ npm run image -- --repository REGISTRY/PATH/strongroom [--repository MIRROR/stro
 ## Docker
 
 ```sh
-docker build -t strongroom:alpha .
-docker run --rm -p 127.0.0.1:8787:8080 --env-file .strongroom/container.env strongroom:alpha
+docker build -t strongroom:local .
+docker run --rm -p 127.0.0.1:8787:8080 --env-file .strongroom/container.env strongroom:local
 ```
 
 `container.env` must use Docker env-file syntax: `STRONGROOM_CONFIG=` followed by **unquoted, one-line JSON**, plus `STRONGROOM_ALLOW_LOCAL=false`. The generated `server.env` uses Node env-file quoting and is not a Docker env-file. Prefer your platform's secret injection for real deployments. The runtime image contains only Node, the bundled host and Wasm; it runs as UID 1000, defaults to port 8080, and needs no writable filesystem.
