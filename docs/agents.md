@@ -63,6 +63,31 @@ Defaults: `--name strongroom`, `--key primary`, region from the profile, directo
 | `INVALID_INPUT` | 2 | `error.path` names the flag to fix |
 | `AWS_ERROR` | 1 | Unexpected AWS failure; `error.awsCode` and `error.operation` identify it |
 
+## Install Strongroom on Google Cloud (agent runbook)
+
+`strongroom setup gcp` does the same with the operator's `gcloud` session: it enables the Cloud KMS API if needed, creates (or reuses) key ring `NAME` and CryptoKey `--key`, then either creates service account `NAME` with `roles/cloudkms.cryptoKeyEncrypterDecrypter` on that key only and a key file (for Workers and other non-GCP hosts), or, with `--service-account EMAIL`, grants an existing Cloud Run / GKE identity and configures `metadataServer` (no key file). It writes a complete `STRONGROOM_CONFIG` and caller token and verifies with real encrypt/decrypt. Verified against Cloud KMS on 2026-10-13 (about 15 s).
+
+```sh
+strongroom setup gcp --tenant acme --project my-project --dry-run
+strongroom setup gcp --tenant acme --project my-project
+# Cloud Run / GKE: no key file
+strongroom setup gcp --tenant acme --project my-project --service-account run-sa@my-project.iam.gserviceaccount.com
+```
+
+Defaults: `--name strongroom` (6-30 lowercase characters; names the key ring and service account), `--key primary`, `--location global`, `--protection-level software` (`hsm` is available), project from `gcloud config`, directory `.strongroom/gcp-NAME`. The service account key is read from a temporary private file, written only into `config.json` (0600), and the temporary file is deleted. Setup retries the IAM grant while a new service account propagates (observed: `INVALID_ARGUMENT` for a few seconds).
+
+Cloud KMS never deletes key rings or keys. `strongroom teardown gcp` removes the grant and the service account it created; `--delete-key` schedules destruction of every key version (30 days by default, restorable until then).
+
+| `error.code` | Exit | Meaning and next step |
+| --- | --- | --- |
+| `GCP_CLI_MISSING` | 2 | Install the Google Cloud CLI |
+| `GCP_NOT_AUTHENTICATED` | 3 | `gcloud auth login`; check `gcloud auth print-access-token` |
+| `GCP_PERMISSION_DENIED` | 3 | The operator lacks `error.requiredPermissions` (`roles/cloudkms.admin` with `roles/iam.serviceAccountAdmin` and `roles/iam.serviceAccountKeyAdmin` cover them) |
+| `GCP_ORG_POLICY` | 3 | The organization forbids service account keys; use `--service-account` on Cloud Run/GKE |
+| `GCP_API_DISABLED` | 2 | Enable `cloudkms.googleapis.com` |
+| `RESOURCE_EXISTS` / `KEY_UNUSABLE` / `INVALID_INPUT` | 2 | As for AWS |
+| `GCP_ERROR` | 1 | Unexpected; `error.gcpCode` and `error.operation` identify it |
+
 ## Decrypt an existing CLI result
 
 An encryption result is `{envelope}`. Decryption requires that envelope plus the context, which must come from trusted application metadata. Pass the stored file with `--envelope` and only the context on stdin:

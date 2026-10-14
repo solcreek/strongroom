@@ -42,7 +42,7 @@ printf '%s' '{"key":"primary","plaintext":"demo-api-key","context":{"tenantId":"
 
 Plaintext and tokens never need to appear in CLI flags. `--output` creates a 0600 file and refuses to overwrite; without it, one JSON value goes to stdout. Errors are one JSON value on stderr, and exit codes distinguish input, authorization, rejection and transient failures.
 
-## Production key in one command (AWS)
+## Production key in one command (AWS or Google Cloud)
 
 With a signed-in `aws` CLI, this creates a KMS key and a least-privilege IAM user, writes a complete `STRONGROOM_CONFIG` and a caller token to `.strongroom/aws-strongroom/`, and verifies them with a real Encrypt/Decrypt:
 
@@ -51,7 +51,7 @@ npx strongroom@alpha setup aws --tenant acme --dry-run   # plan and required IAM
 npx strongroom@alpha setup aws --tenant acme
 ```
 
-`teardown aws` reverses it. See the [agent runbook](docs/agents.md#install-strongroom-on-aws-agent-runbook).
+`setup gcp --tenant acme --project PROJECT` does the same with `gcloud` (add `--service-account EMAIL` on Cloud Run/GKE for keyless workload identity). `teardown aws|gcp` reverses them. See the agent runbooks for [AWS](docs/agents.md#install-strongroom-on-aws-agent-runbook) and [Google Cloud](docs/agents.md#install-strongroom-on-google-cloud-agent-runbook).
 
 ## Application integration
 

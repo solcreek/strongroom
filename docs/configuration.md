@@ -51,7 +51,7 @@ Reference: [AWS Encrypt API](https://docs.aws.amazon.com/kms/latest/APIReference
 }
 ```
 
-Use a symmetric `ENCRYPT_DECRYPT` CryptoKey. Each GCP key takes exactly one credential:
+The fastest path is `strongroom setup gcp --tenant TENANT` (see the [agent runbook](agents.md#install-strongroom-on-google-cloud-agent-runbook)). By hand: use a symmetric `ENCRYPT_DECRYPT` CryptoKey. Each GCP key takes exactly one credential:
 
 | Field | Use | Token source |
 | --- | --- | --- |
