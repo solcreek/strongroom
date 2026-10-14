@@ -26,7 +26,7 @@ After the first successful trusted publish, set the package to **Require two-fac
 
 ## Cutting a release
 
-1. Bump the version in all three places in one commit: `packages/strongroom/package.json`, `capabilities.version` in `service/contract.ts`, and `crates/core/Cargo.toml` (then `cargo check` to refresh `Cargo.lock`).
+1. Move the `[Unreleased]` entries in `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)) under a new version heading with the date and update the compare links, then bump the version in all three places in the same commit: `packages/strongroom/package.json`, `capabilities.version` in `service/contract.ts`, and `crates/core/Cargo.toml` (then `cargo check` to refresh `Cargo.lock`).
 2. Check locally: `npm run release:check -- vX.Y.Z[-pre.N]` prints the version and the npm dist-tag.
 3. Merge to `main`, wait for CI, then tag that commit and push the tag:
 

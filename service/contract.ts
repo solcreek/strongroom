@@ -23,7 +23,7 @@ export const schemas = {
   } } } },
 };
 export const capabilities = {
-  name: 'strongroom', version: '0.1.0-alpha.1', apiVersion: 'v1', envelopeVersion: 1,
+  name: 'strongroom', version: '0.1.0', apiVersion: 'v1', envelopeVersion: 1,
   operations: ['encrypt', 'decrypt'], providers: ['aws', 'gcp', 'vault', 'openbao', 'local'],
   maxPlaintextBytes: 65536, maxRequestBytes: 524288, openapi: '/openapi.json',
   // Every code the service emits. `action` is the next step for a caller or agent.
