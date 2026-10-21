@@ -63,7 +63,12 @@ try {
       }
       if (row.leaseUntil === 0 && update(id, row.version, { leaseUntil: Date.now() + 30_000 })) {
         const leased = db.get(id);
-        const refreshToken = await refresher.decrypt({ envelope: leased.refresh, context: context(id, 'oauth-refresh-token') });
+        // Before the provider sees the token nothing is consumed: on failure (a retryable KMS_UNAVAILABLE,
+        // say) release the lease so a retry is safe. Only a failure after the provider call may leave the
+        // lease to expire into reconnect-required.
+        let refreshToken;
+        try { refreshToken = await refresher.decrypt({ envelope: leased.refresh, context: context(id, 'oauth-refresh-token') }); }
+        catch (e) { update(id, leased.version, { leaseUntil: 0 }); throw e; }
         const t = await idp.refresh(refreshToken);
         // Encrypt before writing, and write both envelopes in one update so they never disagree.
         const [access, refresh] = await Promise.all([
@@ -105,4 +110,17 @@ try {
   const recovered = await accessToken('c3', 'w4');
   assert.deepEqual([recovered.reconnect, idp.calls(), db.get('c3').status], [true, calls, 'reconnect-required']);
   step('lost-lease', { outcome: 'reconnect-required', providerCalled: false });
+
+  // A failure before the provider call consumed nothing, so it must not cost a reconnect: the lease is
+  // released and the next attempt refreshes normally. Here Strongroom is briefly unreachable.
+  await connect('c4');
+  db.set('c4', { ...db.get('c4'), expiresAt: Date.now() });
+  const decrypt = refresher.decrypt;
+  refresher.decrypt = async () => { throw Object.assign(new Error('Unable to reach Strongroom.'), { code: 'NETWORK_ERROR', retryable: true }); };
+  await assert.rejects(accessToken('c4', 'w5'), { code: 'NETWORK_ERROR' });
+  refresher.decrypt = decrypt;
+  assert.equal(db.get('c4').leaseUntil, 0);
+  const retried = await accessToken('c4', 'w5');
+  assert.ok(retried.refreshed);
+  step('retryable-before-refresh', { leaseReleased: true, retried: 'refreshed' });
 } finally { await acme.stop(); }
