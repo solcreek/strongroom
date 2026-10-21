@@ -6,7 +6,7 @@ An integration platform stores each customer's OAuth tokens (Slack, GitHub, Goog
 npm run build && node examples/oauth-integrations/main.mjs
 ```
 
-Three workers ask for an expired token at the same moment. One refreshes, and all three get the same new access token. The run then shows what happens without coordination: replaying the rotated refresh token makes the provider revoke the grant. Last, a worker dies between the provider call and the write-back. The next worker sees the expired lease and marks the connection for reconnection instead of replaying the consumed token.
+Three workers ask for an expired token at the same moment. One refreshes, and all three get the same new access token. The run then shows what happens without coordination: replaying the rotated refresh token makes the provider revoke the grant. Then a worker dies between the provider call and the write-back. The next worker sees the expired lease and marks the connection for reconnection instead of replaying the consumed token. Last, a retryable failure on the decrypt, before the provider call, releases the lease, and the next attempt refreshes normally.
 
 ## Common designs
 
