@@ -15,6 +15,8 @@ npx strongroom setup gcp --tenant acme --project my-project
 npx strongroom teardown aws                          # exact inverse; the key survives unless --delete-key
 ```
 
+Each Strongroom deployment serves exactly one tenant, the `--tenant` given to setup. For many tenants, run one deployment per tenant and route each tenant to its own URL and token.
+
 ## SDK
 
 ```ts
@@ -47,7 +49,7 @@ strongroom encrypt --plaintext-file dek.bin < key-and-context.json   # raw bytes
 strongroom decrypt --envelope dek.json --plaintext-file out.bin < context.json   # raw bytes out, new 0600 file
 strongroom doctor                     # readiness and API version
 strongroom probe --key primary --tenant acme   # real KMS roundtrip through the service
-strongroom token --token-file app-token --tenant acme --keys primary
+strongroom token --token-file app-token --keys primary   # principal for this tenant's deployment
 strongroom config-check --input config.json
 ```
 

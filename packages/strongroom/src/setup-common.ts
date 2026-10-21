@@ -15,17 +15,17 @@ export class SetupError extends StrongroomError {
 export async function assertNewDirectory(directory: string) {
   if (await stat(directory).then(() => true, () => false)) throw new SetupError('INVALID_INPUT', 'The output directory already exists; secrets are never overwritten.', 0, { path: '--directory', next: 'Choose a new --directory.' });
 }
-// Writes config.json (complete STRONGROOM_CONFIG with one principal) and the caller token, both 0600, in a new 0700 directory.
+// Writes config.json (complete STRONGROOM_CONFIG for the one tenant, with one principal) and the caller token, both 0600, in a new 0700 directory.
 export async function writeSetup(directory: string, keyRef: string, key: Record<string, unknown>, tenantId: string) {
   const token = randomBytes(32).toString('base64url'), tokenSha256 = createHash('sha256').update(token).digest('hex');
-  const config = { keys: { [keyRef]: key }, principals: [{ tokenSha256, tenantId, permissions: ['encrypt', 'decrypt'], keys: [keyRef] }] };
+  const config = { tenantId, keys: { [keyRef]: key }, principals: [{ tokenSha256, permissions: ['encrypt', 'decrypt'], keys: [keyRef] }] };
   parseConfig({ STRONGROOM_CONFIG: JSON.stringify(config) });
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const secret = { mode: 0o600, flag: 'wx' } as const;
   await writeFile(resolve(directory, 'config.json'), JSON.stringify(config, null, 2) + '\n', secret);
   await writeFile(resolve(directory, 'token'), token + '\n', secret);
   await writeFile(resolve(directory, '.gitignore'), '*\n', secret).catch(() => {});
-  return { files: { config: resolve(directory, 'config.json'), token: resolve(directory, 'token') }, principal: { tenantId, keys: [keyRef], tokenSha256 } };
+  return { files: { config: resolve(directory, 'config.json'), token: resolve(directory, 'token') }, principal: { keys: [keyRef], tokenSha256 } };
 }
 export function nextSteps(files: { config: string; token: string }, keyRef: string, tenantId: string) {
   return [

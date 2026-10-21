@@ -228,7 +228,7 @@ async function openbao(cleanup) {
 // Through real workerd and the Node host: roundtrip both ways, context rejection, and a denied grant per provider.
 async function endToEnd(keys, deniedKeys, cleanup) {
   const token = randomBytes(32).toString('base64url');
-  const config = { keys, principals: [{ tokenSha256: await sha256(token), tenantId: 'live', permissions: ['encrypt', 'decrypt'], keys: Object.keys(keys) }] };
+  const config = { tenantId: 'live', keys, principals: [{ tokenSha256: await sha256(token), permissions: ['encrypt', 'decrypt'], keys: Object.keys(keys) }] };
   const bindings = { STRONGROOM_CONFIG: JSON.stringify(config) };
   const mf = new Miniflare({ modules: true, scriptPath: 'dist/worker.js', modulesRoot: 'dist', modulesRules: [{ type: 'CompiledWasm', include: ['**/*.wasm'] }], compatibilityDate: '2026-07-01', host: '127.0.0.1', port: 0, bindings });
   cleanup.push(() => mf.dispose());

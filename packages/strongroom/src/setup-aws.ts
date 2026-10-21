@@ -48,7 +48,7 @@ export async function setupAws(options: Record<string, string>) {
   const o: Options = { name, region: options['--region'], profile: options['--profile'], role: options['--role-name'] };
   const directory = resolve(options['--directory'] ?? `.strongroom/aws-${name}`), dryRun = options['--dry-run'] === 'true', skipVerify = options['--no-verify'] === 'true';
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) throw new SetupError('INVALID_INPUT', '--name must match ^[A-Za-z0-9_-]{1,32}$; it names the KMS alias and IAM user.', 0, { path: '--name' });
-  if (!tenantId) throw new SetupError('INVALID_INPUT', 'setup aws requires --tenant TENANT for the first principal.', 0, { path: '--tenant' });
+  if (!tenantId) throw new SetupError('INVALID_INPUT', 'setup aws requires --tenant TENANT: the one tenant the new deployment serves.', 0, { path: '--tenant' });
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(keyRef)) throw new SetupError('INVALID_INPUT', '--key must match ^[A-Za-z0-9_-]{1,64}$.', 0, { path: '--key' });
   await assertNewDirectory(directory);
   const aws = cli(o);
@@ -102,7 +102,7 @@ export async function setupAws(options: Record<string, string>) {
     const verified = o.role ? { ok: false, skipped: 'role credentials exist only inside ECS/EKS; run strongroom probe after deploying' }
       : skipVerify ? { ok: false, skipped: '--no-verify' } : await verifyKey(key, 60000);
     return { ...base, plan: undefined, keyArn, alias, identity: o.role ? { type: 'iam-role', role: o.role } : { type: 'iam-user', user: name, accessKeyId: (key as { accessKeyId: string }).accessKeyId },
-      files, principal, verified, next: nextSteps(files, keyRef, tenantId), teardown: cleanup };
+      tenantId, files, principal, verified, next: nextSteps(files, keyRef, tenantId), teardown: cleanup };
   } catch (e) {
     const error = e instanceof SetupError ? e : new SetupError('SETUP_FAILED', 'Setup failed after creating resources.', 0);
     error.details = { ...error.details, created, cleanup: created.length ? cleanup : undefined };

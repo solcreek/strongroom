@@ -29,14 +29,22 @@ variable "kms_keys" {
   }
 }
 
+variable "tenant_id" {
+  type        = string
+  description = "The one tenant this deployment serves. Give each tenant its own deployment, KMS key and service account."
+  validation {
+    condition     = length(var.tenant_id) > 0 && length(var.tenant_id) <= 256
+    error_message = "tenant_id must be 1-256 characters."
+  }
+}
+
 variable "principals" {
   type = list(object({
     token_sha256 = string
-    tenant_id    = string
     permissions  = list(string)
     keys         = list(string)
   }))
-  description = "Callers. Generate token_sha256 with: strongroom token --token-file FILE --tenant T --keys K. The raw token never enters Terraform."
+  description = "Callers of this tenant's deployment. Generate token_sha256 with: strongroom token --token-file FILE --keys K. The raw token never enters Terraform."
   validation {
     condition     = length(var.principals) > 0 && alltrue([for p in var.principals : can(regex("^[a-f0-9]{64}$", p.token_sha256))])
     error_message = "token_sha256 must be a lowercase SHA-256 hex digest."

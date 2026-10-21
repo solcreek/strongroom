@@ -37,7 +37,7 @@ try {
   const probe = await fetch(`${address}/v1/transit/encrypt/strongroom`, { method: 'POST', headers: { 'x-vault-token': scoped.auth.client_token, 'content-type': 'application/json' },
     body: JSON.stringify({ plaintext: Buffer.alloc(32).toString('base64'), context: Buffer.from('probe').toString('base64'), associated_data: Buffer.from('probe').toString('base64') }) });
   if (!probe.ok) throw new Error(`Transit protocol probe: ${probe.status} ${JSON.stringify((await probe.json()).errors)}`);
-  const config = { keys: { primary: key, vault: { ...key, provider: 'vault' } }, principals: [{ tokenSha256: await sha256(token), tenantId: 'test', permissions: ['encrypt', 'decrypt'], keys: ['primary', 'vault'] }] };
+  const config = { tenantId: 'test', keys: { primary: key, vault: { ...key, provider: 'vault' } }, principals: [{ tokenSha256: await sha256(token), permissions: ['encrypt', 'decrypt'], keys: ['primary', 'vault'] }] };
   mf = new Miniflare({ modules: true, scriptPath: 'dist/worker.js', modulesRoot: 'dist', modulesRules: [{ type: 'CompiledWasm', include: ['**/*.wasm'] }], compatibilityDate: '2026-07-01',
     host: '127.0.0.1', port: 0, bindings: { STRONGROOM_CONFIG: JSON.stringify(config), STRONGROOM_ALLOW_LOCAL: 'true' } });
   const client = new Strongroom({ url: String(await mf.ready), token });

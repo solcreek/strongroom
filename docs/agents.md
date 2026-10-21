@@ -20,6 +20,8 @@ The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FI
 {"error":{"code":"FORBIDDEN","message":"Tenant or key is not permitted.","status":403,"retryable":false,"requestId":"server-generated-id"}}
 ```
 
+`FORBIDDEN` with a correct token usually means `context.tenantId` names a tenant this deployment doesn't serve: call that tenant's own deployment instead.
+
 `INVALID_REQUEST` and `INVALID_CONFIG` errors add `path`, the JSON path of the field to fix, and the message states the rule (`$.context.recordId: must be a well-formed string of 1-256 UTF-8 bytes.`). Messages never echo supplied values.
 
 | Exit code | Meaning | Action |
@@ -37,6 +39,8 @@ The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FI
 ## Install Strongroom on AWS (agent runbook)
 
 `strongroom setup aws` turns the operator's existing `aws` CLI session into a working configuration in one non-interactive command: it creates (or reuses) the KMS key `alias/NAME`, creates a least-privilege IAM user (or grants an existing ECS task / EKS pod role with `--role-name`), writes a complete `STRONGROOM_CONFIG` plus a caller token to a new private directory, and proves the result with a real Encrypt/Decrypt. Verified against AWS on 2026-10-13 (about 20 s, of which about 12 s is IAM propagation).
+
+One setup provisions one tenant's deployment: `--tenant` becomes the configuration's `tenantId`. For another tenant, run setup again with its own `--tenant`, a distinct `--name` and a new `--directory`, and deploy it separately. Each tenant gets its own key, identity and service URL.
 
 1. Plan. Nothing changes; the output lists every action and the IAM permissions the operator needs.
    ```sh

@@ -76,7 +76,7 @@ async function project(options: Record<string, string>) {
 export async function setupGcp(options: Record<string, string>) {
   const { name, keyRing, keyRef, location, workload } = inputs(options);
   const tenantId = options['--tenant'], protection = options['--protection-level'] ?? 'software';
-  if (!tenantId) throw new SetupError('INVALID_INPUT', 'setup gcp requires --tenant TENANT for the first principal.', 0, { path: '--tenant' });
+  if (!tenantId) throw new SetupError('INVALID_INPUT', 'setup gcp requires --tenant TENANT: the one tenant the new deployment serves.', 0, { path: '--tenant' });
   if (!['software', 'hsm'].includes(protection)) throw new SetupError('INVALID_INPUT', '--protection-level must be software or hsm.', 0, { path: '--protection-level' });
   const directory = resolve(options['--directory'] ?? `.strongroom/gcp-${name}`), dryRun = options['--dry-run'] === 'true', skipVerify = options['--no-verify'] === 'true';
   await assertNewDirectory(directory);
@@ -130,7 +130,7 @@ export async function setupGcp(options: Record<string, string>) {
     const verified = workload ? { ok: false, skipped: 'workload credentials exist only on Cloud Run/GKE; run strongroom probe after deploying' }
       : skipVerify ? { ok: false, skipped: '--no-verify' } : await verifyKey(key, 180000);
     return { ...base, plan: undefined, keyId, identity: workload ? { type: 'workload', serviceAccount: email } : { type: 'service-account-key', serviceAccount: email },
-      files, principal, verified, next: nextSteps(files, keyRef, tenantId), teardown: cleanup };
+      tenantId, files, principal, verified, next: nextSteps(files, keyRef, tenantId), teardown: cleanup };
   } catch (e) {
     const error = e instanceof SetupError ? e : new SetupError('SETUP_FAILED', 'Setup failed after creating resources.', 0);
     error.details = { ...error.details, created, cleanup: created.length ? cleanup : undefined };

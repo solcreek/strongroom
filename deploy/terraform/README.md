@@ -11,7 +11,7 @@ Both were applied, probed, updated and destroyed end to end on 2026-10-13 with O
 
 ## Design
 
-- **No secret in the configuration.** With workload identity, `STRONGROOM_CONFIG` contains only key IDs, tenant IDs and token *digests*. The modules generate it from variables and pass it as a plain environment variable, so there is no Secret Manager step and nothing to rotate in the platform. Callers' raw tokens never enter Terraform state.
+- **No secret in the configuration.** With workload identity, `STRONGROOM_CONFIG` contains only key IDs, the tenant ID and token *digests*. The modules generate it from variables and pass it as a plain environment variable, so there is no Secret Manager step and nothing to rotate in the platform. Callers' raw tokens never enter Terraform state.
 - **Least privilege.** GCP grants `roles/cloudkms.cryptoKeyEncrypterDecrypter` on each listed CryptoKey only, to a dedicated runtime service account. AWS grants `kms:Encrypt`/`kms:Decrypt` on each listed key ARN only, and only when the request carries Strongroom's `strongroom` encryption context, so the task role cannot decrypt other data protected by the same key.
 - **Images pinned by digest.** `npm run image` prints `REPO@sha256:…`; that string is the `image` variable. Promote the same digest between environments instead of rebuilding.
 - **Two-phase first apply.** The registry must exist before an image can be pushed, so the service is created only once `image` is set. Later deploys are one apply.
@@ -19,7 +19,7 @@ Both were applied, probed, updated and destroyed end to end on 2026-10-13 with O
 ## Recommendations
 
 1. **Keep KMS keys out of the service stack.** Destroying or recreating a service must never touch the keys, or every stored envelope becomes unrecoverable. Create keys in a separate, long-lived stack (or by hand) with `lifecycle { prevent_destroy = true }`, then pass their IDs to `kms_keys`. A central key project or account works: on 2026-10-13 the Cloud Run service used a key in a different project.
-2. **Use remote state with locking**: a GCS bucket backend, or S3 with `use_lockfile = true`. State holds the generated configuration (no secrets, but tenant IDs and key IDs), so restrict who can read it.
+2. **Use remote state with locking**: a GCS bucket backend, or S3 with `use_lockfile = true`. State holds the generated configuration (no secrets, but the tenant ID and key IDs), so restrict who can read it.
 3. **Run applies from CI with federated identity** (GitHub OIDC to an AWS role, or GCP Workload Identity Federation) instead of personal credentials. Plan on pull requests, apply on merge. *Not yet exercised here.*
 4. **Pick `public` deliberately on Cloud Run.** `public = false` adds Google IAM as a second gate: callers need `roles/run.invoker` and send an ID token in `X-Serverless-Authorization` (SDK `cloudRunIdToken`, CLI `STRONGROOM_CLOUD_RUN_ID_TOKEN`). `public = true` matches the Workers deployment, where the Strongroom bearer token is the only gate.
 5. **Keep `deletion_protection = true`** (Cloud Run) and `force_delete_registry = false` (ECR) in production; the verification run turned them off only so it could be torn down.
@@ -31,8 +31,10 @@ Prerequisites: OpenTofu ≥ 1.6 (or Terraform ≥ 1.6), `crane`, the AWS CLI and
 ### 1. Caller token (both platforms)
 
 ```sh
-node packages/strongroom/dist/cli.js token --token-file .strongroom/app-token --tenant acme --keys primary
+node packages/strongroom/dist/cli.js token --token-file .strongroom/app-token --keys primary
 ```
+
+Set `tenant_id` to the one tenant this deployment serves. For more tenants, apply the module once per tenant (a separate state, KMS key and identity each); a deployment never serves a second tenant.
 
 Copy `principal.token_sha256` (the `tokenSha256` value) into `principals` in your tfvars. Hand `.strongroom/app-token` to the calling application through its own secret store.
 

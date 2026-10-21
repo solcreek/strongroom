@@ -74,6 +74,7 @@ test('setup gcp writes a service-account config, deletes the key file, and retri
   assert.equal(r.calls.filter(c => c[2] === 'add-iam-policy-binding').length, 3);
   const config = JSON.parse(await readFile(join(out, 'config.json'), 'utf8'));
   assert.deepEqual(config.keys.primary, { provider: 'gcp', keyId: key, serviceAccount: { clientEmail: email, privateKey } });
+  assert.equal(config.tenantId, 'acme'); assert.deepEqual(Object.keys(config.principals[0]).sort(), ['keys', 'permissions', 'tokenSha256']);
   assert.ok(parseConfig({ STRONGROOM_CONFIG: JSON.stringify(config) }));
   for (const f of ['config.json', 'token']) assert.equal((await stat(join(out, f))).mode & 0o777, 0o600);
   const keyPath = r.calls.find(c => c[2] === 'keys' && c[3] === 'create')[4];

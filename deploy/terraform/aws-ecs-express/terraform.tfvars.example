@@ -6,10 +6,12 @@ kms_keys = {
   primary = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"
 }
 
-# From: strongroom token --token-file .strongroom/app-token --tenant acme --keys primary
+# The one tenant this deployment serves; apply the module once per tenant.
+tenant_id = "acme"
+
+# From: strongroom token --token-file .strongroom/app-token --keys primary
 principals = [{
   token_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-  tenant_id    = "acme"
   permissions  = ["encrypt", "decrypt"]
   keys         = ["primary"]
 }]

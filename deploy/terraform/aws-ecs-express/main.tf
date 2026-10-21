@@ -1,9 +1,11 @@
 # Strongroom on ECS Express Mode: Fargate tasks behind a managed HTTPS load balancer.
 # KMS access comes from the task role (containerCredentials), so STRONGROOM_CONFIG holds no secret:
-# only key ARNs, tenant IDs and token digests. It is generated here and passed as a plain environment variable.
+# only key ARNs, the tenant ID and token digests. It is generated here and passed as a plain environment variable.
+# One deployment serves one tenant; apply this module once per tenant.
 
 locals {
   config = jsonencode({
+    tenantId = var.tenant_id
     keys = { for ref, arn in var.kms_keys : ref => {
       provider             = "aws"
       region               = split(":", arn)[3]
@@ -12,7 +14,6 @@ locals {
     } }
     principals = [for p in var.principals : {
       tokenSha256 = p.token_sha256
-      tenantId    = p.tenant_id
       permissions = p.permissions
       keys        = p.keys
     }]

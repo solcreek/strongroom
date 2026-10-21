@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appWith, env, config, context, token, tenantBToken, encryptToken, request, encrypt } from './helpers.mjs';
+import { appWith, env, config, context, token, tenantBEnv, encryptToken, request, encrypt } from './helpers.mjs';
 import { parseConfig } from '../service/config.ts';
 import { equalHash, crc32c, utf8, base64url } from '../service/encoding.ts';
 import { errorResponse } from '../service/app.ts';
@@ -61,14 +61,28 @@ test('auth, tenant, operation and key permissions are independent checks', async
     ['/v1/encrypt', {}, '', 401, 'UNAUTHENTICATED'],
     ['/v1/encrypt', {}, 'wrong'.repeat(10), 401, 'UNAUTHENTICATED'],
     ['/v1/decrypt', { envelope, context }, encryptToken, 403, 'FORBIDDEN'],
-    ['/v1/decrypt', { envelope, context }, tenantBToken, 403, 'FORBIDDEN'],
-    ['/v1/decrypt', { envelope, context: { ...context, tenantId: 'b' } }, tenantBToken, 400, 'DECRYPT_FAILED'],
+    ['/v1/encrypt', { plaintext: 'x', context: { ...context, tenantId: 'b' }, key: 'primary' }, token, 403, 'FORBIDDEN'],
+    ['/v1/decrypt', { envelope, context: { ...context, tenantId: 'b' } }, token, 403, 'FORBIDDEN'],
     ['/v1/encrypt', { plaintext: 'x', context, key: 'restricted' }, token, 403, 'FORBIDDEN'],
     ['/v1/encrypt', { plaintext: 'x', context, key: 'missing' }, token, 403, 'FORBIDDEN'],
   ]) {
     const response = await app.fetch(request(path, body, auth));
     assert.equal(response.status, status); assert.equal((await response.json()).error.code, code);
   }
+});
+test('one deployment serves one tenant; another tenant\'s deployment cannot open its envelopes', async () => {
+  // Tenant b's deployment shares the KEK and token here, the worst miswiring: the tenant check and the AAD still hold.
+  const envelope = await encrypt(appWith()), other = appWith(tenantBEnv);
+  for (const [body, status, code] of [[{ envelope, context }, 403, 'FORBIDDEN'], [{ envelope, context: { ...context, tenantId: 'b' } }, 400, 'DECRYPT_FAILED']]) {
+    const response = await other.fetch(request('/v1/decrypt', body));
+    assert.equal(response.status, status); assert.equal((await response.json()).error.code, code);
+  }
+  // The schema cannot express a second tenant.
+  for (const [c, path] of [
+    [{ keys: config.keys, principals: config.principals }, '$'],
+    [{ ...config, tenantId: '' }, '$.tenantId'], [{ ...config, tenantId: ['a', 'b'] }, '$.tenantId'],
+    [{ ...config, principals: [{ ...config.principals[0], tenantId: 'b' }] }, '$.principals[0].tenantId'],
+  ]) assert.throws(() => parseConfig({ ...env, STRONGROOM_CONFIG: JSON.stringify(c) }), e => e.path === path, path);
 });
 test('tampering and context changes fail closed', async () => {
   const app = appWith(); const envelope = await encrypt(app);
@@ -115,7 +129,7 @@ test('invalid configuration never starts and local keys require opt-in', () => {
   ]) assert.throws(() => parseConfig({ ...env, STRONGROOM_CONFIG: JSON.stringify(c) }));
   // Diagnostics name the JSON path and rule so an agent can repair the file, and never echo supplied values.
   const secretKek = 'not-a-valid-kek-but-secret';
-  for (const [c, path, hint] of [[null, '$', 'JSON object'], [{ ...config, extra: true }, '$', 'unknown field(s): extra'], [{ keys: {} }, '$', 'missing required field(s): principals'],
+  for (const [c, path, hint] of [[null, '$', 'JSON object'], [{ ...config, extra: true }, '$', 'unknown field(s): extra'], [{ keys: {} }, '$', 'missing required field(s): tenantId, principals'],
     [{ ...config, keys: { primary: { provider: 'local', kek: secretKek } } }, '$.keys.primary.kek', '32 random bytes'],
     [{ ...config, keys: { primary: { provider: 'nope' } } }, '$.keys.primary.provider', 'aws, gcp'],
     [{ ...config, keys: { primary: { provider: 'aws', region: 'us-east-1', keyId: 'alias/secret-alias', accessKeyId: 'a', secretAccessKey: 'b' } } }, '$.keys.primary.keyId', 'aws kms describe-key'],
@@ -170,7 +184,7 @@ test('unauthorized and malformed envelopes never reach KMS', async () => {
   const provider = { provider: 'vault', url: 'https://vault.example', mount: 'transit', keyName: 'test', token: 'test' };
   const app = appWith({ STRONGROOM_CONFIG: JSON.stringify({ ...config, keys: { primary: provider, restricted: provider } }) }, async () => { calls++; throw new Error('unexpected'); });
   const envelope = await encrypt(appWith());
-  await app.fetch(request('/v1/decrypt', { envelope, context }, tenantBToken));
+  await app.fetch(request('/v1/decrypt', { envelope, context: { ...context, tenantId: 'b' } }));
   await app.fetch(request('/v1/decrypt', { envelope: { ...envelope, version: 2 }, context }));
   await app.fetch(request('/v1/decrypt', { envelope, context }, encryptToken));
   assert.equal(calls, 0);

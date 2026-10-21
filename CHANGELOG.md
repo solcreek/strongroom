@@ -15,6 +15,12 @@ Before 1.0.0, a minor version may change the HTTP API, CLI or configuration; the
 - SDK: `encrypt` takes a `Uint8Array` plaintext. `decryptBytes` returns a `Uint8Array` read without ever becoming a string, and wipes the transport chunks.
 - CLI: `encrypt --plaintext-file` and `decrypt --plaintext-file` move raw bytes through files; a decrypted file is new and mode 0600.
 
+### Changed
+
+- **Breaking:** one deployment serves exactly one tenant. `STRONGROOM_CONFIG` takes a top-level `tenantId`, and principals no longer have one; a principal that still carries a `tenantId` is rejected with a pointer to `$.tenantId`. Every request's `context.tenantId` must equal the deployment's tenant, or it gets `FORBIDDEN`. To serve many tenants, run one deployment per tenant, each with its own KMS key and identity (see `docs/security.md`, "Tenant isolation"). Migrate by moving the principals' common `tenantId` to the top level. A configuration that mixed tenants becomes one configuration per tenant.
+- **Breaking:** `strongroom token` no longer takes `--tenant`, and its `principal` has no `tenantId`. `setup aws|gcp --tenant` sets the configuration's `tenantId` and reports it as `tenantId`. `config-check` reports `tenantId`.
+- **Breaking:** the Terraform modules take a `tenant_id` variable, and `principals` entries drop `tenant_id`. Apply a module once per tenant.
+
 ## [0.1.0] - 2026-10-13
 
 ### Added

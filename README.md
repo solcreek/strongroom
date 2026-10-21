@@ -7,7 +7,8 @@ Protect user-supplied API keys with a managed KMS. Your database stores only enc
 This is **0.1.0**, the first stable-tagged pre-1.0 release; the HTTP API is `v1` and the envelope format is version 1. Rust owns AES-256-GCM and the ciphertext format, and Cloudflare Workers is the primary target; containers run the same Rust Wasm and HTTP handler on a Node 24 host. The SDK and CLI are on npm as `strongroom`, published with provenance. The local development commands below neither publish nor deploy anything.
 
 - KMS: AWS KMS, Google Cloud KMS, Vault, OpenBao Transit.
-- HTTP: `POST /v1/encrypt`, `POST /v1/decrypt`, with fixed tenant, operation and key authorization.
+- HTTP: `POST /v1/encrypt`, `POST /v1/decrypt`, with fixed operation and key authorization.
+- Tenancy: one deployment per tenant, each with its own KMS key and identity, enforced by the configuration schema ([why](docs/security.md#tenant-isolation)).
 - Agent interface: TypeScript SDK, JSON CLI, OpenAPI 3.1, offline JSON Schema, explicit error codes and a retryable field.
 - Deployment: Workers, Docker, Cloud Run / GKE, AWS ECS / App Runner, Render, Railway. Cloud Run and ECS Express have ready-to-apply OpenTofu/Terraform modules that use workload identity and keep secrets out of the configuration; both were deployed and verified on 2026-10-13: [deployment runbook](deploy/terraform/README.md).
 
@@ -84,7 +85,7 @@ const key = await strongroom.decryptBytes({ envelope: sealed, context });
 try { useKey(key); } finally { key.fill(0); }
 ```
 
-One Strongroom token is bound to one tenant. Your application must still verify that the user may access the given credential. Context is not a password and not a substitute for authorization; never put an API key in the context.
+A Strongroom deployment serves one tenant, so route each tenant to its own deployment's URL and token. Your application must still verify that the user may access the given credential. Context is not a password and not a substitute for authorization; never put an API key in the context.
 
 ## Development and verification
 

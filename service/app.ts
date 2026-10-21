@@ -96,7 +96,8 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log
       context(input.context);
       const key = op === 'encrypt' ? input.key : object(input.envelope) ? input.envelope.key : undefined;
       if (typeof key !== 'string' || !keyPattern.test(key)) throw invalid(op === 'encrypt' ? '$.key' : '$.envelope.key', 'must be a configured key reference matching ^[A-Za-z0-9_-]{1,64}$.');
-      if (input.context.tenantId !== principal.tenantId || !principal.keys.includes(key) || !providers.has(key)) throw new ServiceError('FORBIDDEN', 403, 'Tenant or key is not permitted.');
+      // The tenant stays in the AAD, so even a miswired key cannot open another deployment's envelopes.
+      if (input.context.tenantId !== config.tenantId || !principal.keys.includes(key) || !providers.has(key)) throw new ServiceError('FORBIDDEN', 403, 'Tenant or key is not permitted.');
       const provider = providers.get(key)!;
       const kmsFailure = (e: unknown) => {
         const error = e instanceof ServiceError ? e : unavailable();
