@@ -14,6 +14,32 @@ test('CLI discovery is JSON and needs no credentials or network', async () => {
     const r = await runCli(args); assert.equal(r.code, 2); assert.equal(r.stdout, ''); assert.equal(JSON.parse(r.stderr).error.code, 'INVALID_INPUT');
   }
 });
+test('CLI init makes one local deployment per tenant and port, and its env files start a working host', { timeout: 30000 }, async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'strongroom-init-'));
+  let server;
+  try {
+    const { createServer } = await import('node:net');
+    const probe = createServer().listen(0, '127.0.0.1'); await new Promise(r => probe.once('listening', r));
+    const port = probe.address().port; await new Promise(r => probe.close(r));
+    const r = await runCli(['init', '--directory', join(parent, 'acme'), '--tenant', 'acme', '--port', String(port)]); assert.equal(r.code, 0, r.stderr);
+    const info = JSON.parse(r.stdout);
+    assert.equal(info.tenantId, 'acme'); assert.equal(info.url, `http://127.0.0.1:${port}`);
+    assert.equal(JSON.parse(await readFile(info.config, 'utf8')).tenantId, 'acme');
+    // The generated env files are what a developer or agent runs: start the real host with them.
+    server = spawn(process.execPath, [`--env-file=${info.serverEnv}`, 'dist/server.js'], { stdio: 'ignore' });
+    let ready = false;
+    for (let i = 0; i < 200 && !ready; i++) { try { ready = (await fetch(`${info.url}/readyz`)).ok; } catch { await new Promise(r => setTimeout(r, 25)); } }
+    assert.ok(ready, 'host did not start from server.env');
+    const token = (await readFile(info.clientEnv, 'utf8')).match(/^STRONGROOM_TOKEN=(.+)$/m)[1];
+    const context = { tenantId: 'acme', recordId: 'r', purpose: 'p' };
+    const sealed = await runCli(['encrypt'], { input: JSON.stringify({ key: 'primary', context, plaintext: 'x' }), env: { STRONGROOM_URL: info.url, STRONGROOM_TOKEN: token } });
+    assert.equal(sealed.code, 0, sealed.stderr);
+    for (const [args, path] of [[['--tenant', "a'b"], '--tenant'], [['--tenant', 'a\nb'], '--tenant'], [['--port', '0'], '--port'], [['--port', '80x'], '--port']]) {
+      const bad = await runCli(['init', '--directory', join(parent, `bad${path}${args[1].length}`), ...args]);
+      assert.equal(bad.code, 2, args.join(' ')); assert.equal(JSON.parse(bad.stderr).error.path, path);
+    }
+  } finally { server?.kill(); await rm(parent, { recursive: true, force: true }); }
+});
 test('CLI init generates private random credentials, refuses overwrite and keeps secrets off stdout', async () => {
   const parent = await mkdtemp(join(tmpdir(), 'strongroom-cli-'));
   try {
