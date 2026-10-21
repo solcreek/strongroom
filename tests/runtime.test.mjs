@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Miniflare } from 'miniflare';
@@ -39,6 +39,11 @@ test('real workerd and Node HTTP hosts interoperate through SDK and CLI', { time
       const envelope = await writer.encrypt({ key: 'primary', context, plaintext: 'cross-runtime-secret-🔑' });
       assert.equal(await reader.decrypt({ envelope, context }), 'cross-runtime-secret-🔑');
       await assert.rejects(reader.decrypt({ envelope, context: { ...context, recordId: 'wrong' } }), { code: 'DECRYPT_FAILED' });
+      // Binary plaintext crosses hosts as raw octets, including bytes that are not UTF-8.
+      const key = new Uint8Array(32).map((_, i) => 255 - i);
+      const wrapped = await writer.encrypt({ key: 'primary', context, plaintext: key });
+      assert.deepEqual(await reader.decryptBytes({ envelope: wrapped, context }), key);
+      await assert.rejects(reader.decrypt({ envelope: wrapped, context }), { code: 'PLAINTEXT_NOT_TEXT', status: 406 });
     }
     const encrypted = await cli(['encrypt'], workerUrl, JSON.stringify({ key: 'primary', context, plaintext: 'cli-secret' }));
     assert.equal(encrypted.code, 0, encrypted.stderr); assert.equal(encrypted.stderr, '');
@@ -55,6 +60,26 @@ test('real workerd and Node HTTP hosts interoperate through SDK and CLI', { time
       }
       assert.equal((await cli(['decrypt', '--envelope', join(dir, 'bare.json')], workerUrl, input)).code, 2);
       assert.equal((await cli(['encrypt', '--envelope', join(dir, 'bare.json')], workerUrl, input)).code, 2);
+      // Raw bytes stay in files: --plaintext-file feeds encrypt and receives decrypt, never stdout.
+      const raw = Buffer.from([0xff, 0x00, 0xfe, 0x80]);
+      await writeFile(join(dir, 'dek.bin'), raw);
+      const sealed = await cli(['encrypt', '--plaintext-file', join(dir, 'dek.bin')], workerUrl, JSON.stringify({ key: 'primary', context }));
+      assert.equal(sealed.code, 0, sealed.stderr);
+      await writeFile(join(dir, 'dek.json'), sealed.stdout);
+      const opened = await cli(['decrypt', '--envelope', join(dir, 'dek.json'), '--plaintext-file', join(dir, 'out.bin')], nodeUrl, JSON.stringify({ context }));
+      assert.equal(opened.code, 0, opened.stderr); assert.deepEqual(JSON.parse(opened.stdout), { plaintextFile: join(dir, 'out.bin'), bytes: 4 });
+      assert.deepEqual(await readFile(join(dir, 'out.bin')), raw); assert.equal((await stat(join(dir, 'out.bin'))).mode & 0o777, 0o600);
+      assert.equal((await cli(['decrypt', '--envelope', join(dir, 'dek.json'), '--plaintext-file', join(dir, 'out.bin')], nodeUrl, JSON.stringify({ context }))).code, 2);
+      const text = await cli(['decrypt', '--envelope', join(dir, 'dek.json')], nodeUrl, JSON.stringify({ context }));
+      assert.equal(text.code, 4); assert.equal(JSON.parse(text.stderr).error.code, 'PLAINTEXT_NOT_TEXT');
+      for (const body of [{ context }, { context, key: 'primary', plaintext: 'x' }]) assert.equal((await cli(['encrypt', '--plaintext-file', join(dir, 'dek.bin')], workerUrl, JSON.stringify(body))).code, 2);
+      await writeFile(join(dir, 'big.bin'), Buffer.alloc(65537));
+      assert.equal((await cli(['encrypt', '--plaintext-file', join(dir, 'big.bin')], workerUrl, JSON.stringify({ key: 'primary', context }))).code, 2);
+      // A FIFO reports size 0: the CLI must bound the read itself, not trust stat.
+      execFileSync('mkfifo', [join(dir, 'pipe')]);
+      const writer = writeFile(join(dir, 'pipe'), Buffer.alloc(200000)).catch(() => {});
+      assert.equal((await cli(['encrypt', '--plaintext-file', join(dir, 'pipe')], workerUrl, JSON.stringify({ key: 'primary', context }))).code, 2);
+      await writer;
     } finally { await rm(dir, { recursive: true, force: true }); }
     const denied = await cli(['decrypt'], workerUrl, input, encryptToken);
     assert.equal(denied.code, 3); assert.equal(denied.stdout, ''); assert.equal(JSON.parse(denied.stderr).error.code, 'FORBIDDEN');

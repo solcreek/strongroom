@@ -80,8 +80,9 @@ fn crypt(
 }
 
 /// 44 host-generated CSPRNG bytes: fresh 32-byte DEK and 12-byte nonce.
+/// Plaintext is bytes; whether they are text is the host's concern.
 pub fn seal(
-    plaintext: &str,
+    plaintext: &[u8],
     ctx: &Context,
     key: &str,
     entropy: &[u8],
@@ -93,7 +94,7 @@ pub fn seal(
         true,
         &entropy[..32],
         &entropy[32..],
-        plaintext.as_bytes(),
+        plaintext,
         &aad(key, ctx)?,
     )?;
     Ok(Envelope {
@@ -123,18 +124,19 @@ pub fn inspect(env: &Envelope, ctx: &Context) -> Result<Vec<u8>, &'static str> {
     aad(&env.key, ctx)
 }
 
-pub fn open(env: &Envelope, ctx: &Context, dek: &[u8]) -> Result<String, &'static str> {
+pub fn open(env: &Envelope, ctx: &Context, dek: &[u8]) -> Result<Zeroizing<Vec<u8>>, &'static str> {
     let aad = inspect(env, ctx)?;
-    let data = crypt(
+    crypt(
         false,
         dek,
         &decode(&env.nonce)?,
         &decode(&env.ciphertext)?,
         &aad,
-    )?;
-    String::from_utf8(data).map_err(|_| "invalid utf8")
+    )
+    .map(Zeroizing::new)
 }
 
+// Plaintext crosses the bridge as base64url bytes in both directions.
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
 enum Command {
@@ -167,9 +169,10 @@ pub fn execute_json(input: &str) -> Result<String, &'static str> {
             entropy,
         } => {
             let plaintext = Zeroizing::new(plaintext);
+            let data = Zeroizing::new(decode(&plaintext)?);
             let entropy = Zeroizing::new(entropy);
             let bytes = Zeroizing::new(decode(&entropy)?);
-            serde_json::json!({"envelope": seal(&plaintext, &context, &key, &bytes)?, "aad": B64.encode(aad(&key, &context)?)})
+            serde_json::json!({"envelope": seal(&data, &context, &key, &bytes)?, "aad": B64.encode(aad(&key, &context)?)})
         }
         Command::Inspect { envelope, context } => {
             serde_json::json!({"aad": B64.encode(inspect(&envelope, &context)?)})
@@ -181,7 +184,9 @@ pub fn execute_json(input: &str) -> Result<String, &'static str> {
         } => {
             let dek = Zeroizing::new(dek);
             let bytes = Zeroizing::new(decode(&dek)?);
-            serde_json::json!({"plaintext": open(&envelope, &context, &bytes)?})
+            let data = open(&envelope, &context, &bytes)?;
+            let encoded = Zeroizing::new(B64.encode(&*data));
+            serde_json::json!({"plaintext": encoded.as_str()})
         }
     };
     serde_json::to_string(&value).map_err(|_| "serialization failed")
@@ -203,8 +208,8 @@ mod tests {
             purpose: "api-key".into(),
         }
     }
-    fn envelope(text: &str) -> Envelope {
-        let mut e = seal(text, &ctx(), "primary", &[7; 44]).unwrap();
+    fn envelope(data: &[u8]) -> Envelope {
+        let mut e = seal(data, &ctx(), "primary", &[7; 44]).unwrap();
         e.wrapped_key = "opaque-kms-key".into();
         e
     }
@@ -218,15 +223,20 @@ mod tests {
     }
     #[test]
     fn roundtrip_boundaries() {
-        for s in ["".to_string(), "秘密🔑".into(), "x".repeat(MAX_PLAINTEXT)] {
-            assert_eq!(open(&envelope(&s), &ctx(), &[7; 32]).unwrap(), s);
+        for data in [
+            vec![],
+            "秘密🔑".as_bytes().to_vec(),
+            vec![0xff, 0x00, 0xfe],
+            vec![b'x'; MAX_PLAINTEXT],
+        ] {
+            assert_eq!(*open(&envelope(&data), &ctx(), &[7; 32]).unwrap(), data);
         }
-        assert!(seal(&"x".repeat(MAX_PLAINTEXT + 1), &ctx(), "primary", &[7; 44]).is_err());
-        assert!(seal("x", &ctx(), "primary", &[7; 43]).is_err());
+        assert!(seal(&[b'x'; MAX_PLAINTEXT + 1], &ctx(), "primary", &[7; 44]).is_err());
+        assert!(seal(b"x", &ctx(), "primary", &[7; 43]).is_err());
     }
     #[test]
     fn every_binding_and_ciphertext_is_authenticated() {
-        let e = envelope("secret");
+        let e = envelope(b"secret");
         for field in 0..3 {
             let mut c = ctx();
             match field {
@@ -264,15 +274,23 @@ mod tests {
         ] {
             assert!(execute_json(s).is_err());
         }
-        let mut e = envelope("s");
+        let bridge = |plaintext: &str| {
+            let input = serde_json::json!({"op": "seal", "plaintext": plaintext, "context": ctx(), "key": "primary", "entropy": B64.encode([7; 44])});
+            execute_json(&input.to_string())
+        };
+        assert!(bridge("AP8").is_ok());
+        for plaintext in ["not base64!", "AP8="] {
+            assert!(bridge(plaintext).is_err());
+        }
+        let mut e = envelope(b"s");
         e.nonce.push('=');
         assert!(inspect(&e, &ctx()).is_err());
-        e = envelope("s");
+        e = envelope(b"s");
         e.wrapped_key.clear();
         assert!(inspect(&e, &ctx()).is_err());
         let mut c = ctx();
         c.purpose.clear();
-        assert!(inspect(&envelope("s"), &c).is_err());
-        assert!(seal("s", &ctx(), "../key", &[7; 44]).is_err());
+        assert!(inspect(&envelope(b"s"), &c).is_err());
+        assert!(seal(b"s", &ctx(), "../key", &[7; 44]).is_err());
     }
 }

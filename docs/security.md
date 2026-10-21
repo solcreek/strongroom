@@ -25,4 +25,6 @@ Service configuration is trusted and is stored as a platform secret. Callers can
 
 Rust zeroizes owned DEK/entropy buffers, and the host wipes mutable DEK/entropy arrays after use. JSON strings, JavaScript strings, Wasm linear memory, allocator copies and plaintext returned to the application cannot be guaranteed erased. Do not claim full memory zeroization.
 
+Binary plaintext narrows this on the caller's side only. `decryptBytes` reads `application/octet-stream` into a `Uint8Array`, wipes the transport chunks and never makes a string, so the caller can `fill(0)` the one copy it gets. Encrypting bytes still sends them as base64url text, and the service still passes plaintext through the Wasm bridge as JSON strings.
+
 The local provider uses an explicitly configured random KEK and requires `STRONGROOM_ALLOW_LOCAL=true`. It is only for local development. Anyone with that KEK and the original context can decrypt the envelopes. The POC's public fixed key is isolated in `poc/` and is never accepted by this service.

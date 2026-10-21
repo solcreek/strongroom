@@ -8,6 +8,13 @@ Before 1.0.0, a minor version may change the HTTP API, CLI or configuration; the
 
 ## [Unreleased]
 
+### Added
+
+- Binary plaintext, for secrets such as data keys. `POST /v1/encrypt` accepts `plaintextBase64url` instead of `plaintext`. `POST /v1/decrypt` returns the raw bytes as `application/octet-stream` when asked with `Accept`. The envelope format is unchanged, and text envelopes can be read either way.
+- `PLAINTEXT_NOT_TEXT` (406): a plaintext that is not valid UTF-8 was decrypted as JSON text.
+- SDK: `encrypt` takes a `Uint8Array` plaintext. `decryptBytes` returns a `Uint8Array` read without ever becoming a string, and wipes the transport chunks.
+- CLI: `encrypt --plaintext-file` and `decrypt --plaintext-file` move raw bytes through files; a decrypted file is new and mode 0600.
+
 ## [0.1.0] - 2026-10-13
 
 ### Added

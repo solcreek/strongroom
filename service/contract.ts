@@ -11,8 +11,9 @@ const envelope = { type: 'object', additionalProperties: false, required: ['vers
 } };
 export const schemas = {
   Context: context, Envelope: envelope,
-  EncryptInput: { type: 'object', additionalProperties: false, required: ['plaintext', 'context', 'key'], properties: {
-    plaintext: { type: 'string', maxLength: 65536, description: 'Well-formed UTF-8 text, at most 65536 bytes.' }, context, key,
+  EncryptInput: { type: 'object', additionalProperties: false, required: ['context', 'key'], oneOf: [{ required: ['plaintext'] }, { required: ['plaintextBase64url'] }], properties: {
+    plaintext: { type: 'string', maxLength: 65536, description: 'Well-formed UTF-8 text, at most 65536 bytes.' },
+    plaintextBase64url: { ...b64, maxLength: 87382, description: 'Binary plaintext (for example a data key), canonical base64url without padding, at most 65536 bytes decoded.' }, context, key,
   } },
   DecryptInput: { type: 'object', additionalProperties: false, required: ['envelope', 'context'], properties: { envelope, context } },
   EncryptOutput: { type: 'object', additionalProperties: false, required: ['envelope'], properties: { envelope } },
@@ -26,6 +27,8 @@ export const capabilities = {
   name: 'strongroom', version: '0.1.0', apiVersion: 'v1', envelopeVersion: 1,
   operations: ['encrypt', 'decrypt'], providers: ['aws', 'gcp', 'vault', 'openbao', 'local'],
   maxPlaintextBytes: 65536, maxRequestBytes: 524288, openapi: '/openapi.json',
+  // Decrypt returns {plaintext} JSON by default, or the raw bytes for Accept: application/octet-stream.
+  decryptMediaTypes: ['application/json', 'application/octet-stream'],
   // Every code the service emits. `action` is the next step for a caller or agent.
   errors: {
     INVALID_REQUEST: { status: 400, retryable: false, action: 'Fix the field named by error.path; see schema.' },
@@ -34,6 +37,7 @@ export const capabilities = {
     FORBIDDEN: { status: 403, retryable: false, action: 'The token lacks this tenant, operation or key reference.' },
     NOT_FOUND: { status: 404, retryable: false, action: 'Use a documented endpoint.' },
     METHOD_NOT_ALLOWED: { status: 405, retryable: false, action: 'Use the documented method.' },
+    PLAINTEXT_NOT_TEXT: { status: 406, retryable: false, action: 'The envelope opened but holds bytes that are not UTF-8 text. Decrypt with Accept: application/octet-stream (SDK decryptBytes, CLI decrypt --plaintext-file FILE).' },
     REQUEST_TIMEOUT: { status: 408, retryable: false, action: 'Send the complete request body promptly.' },
     PAYLOAD_TOO_LARGE: { status: 413, retryable: false, action: 'Reduce the request size.' },
     UNSUPPORTED_MEDIA_TYPE: { status: 415, retryable: false, action: 'Send Content-Type: application/json.' },
@@ -47,8 +51,9 @@ export const capabilities = {
 };
 function operation(name: 'encrypt' | 'decrypt') {
   const type = name === 'encrypt' ? 'Encrypt' : 'Decrypt';
+  const bytes = name === 'decrypt' ? { 'application/octet-stream': { schema: { type: 'string', contentMediaType: 'application/octet-stream', description: 'The raw plaintext bytes, when the request sends Accept: application/octet-stream.' } } } : {};
   return { operationId: name, security: [{ bearerAuth: [] }], requestBody: { required: true, content: { 'application/json': { schema: { $ref: `#/components/schemas/${type}Input` } } } },
-    responses: { '200': { description: 'Success; Cache-Control: no-store', content: { 'application/json': { schema: { $ref: `#/components/schemas/${type}Output` } } } },
+    responses: { '200': { description: 'Success; Cache-Control: no-store', content: { 'application/json': { schema: { $ref: `#/components/schemas/${type}Output` } }, ...bytes } },
       default: { description: 'Stable error code and retryability. No upstream details or secret values.', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } } } };
 }
 export const openapi = { openapi: '3.1.0', info: { title: 'Strongroom', version: capabilities.version, description: 'Stateless envelope encryption for recoverable BYOK credentials. Context identifiers are metadata, not secrets.' },

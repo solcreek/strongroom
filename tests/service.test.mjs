@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { appWith, env, config, context, token, tenantBToken, encryptToken, request, encrypt } from './helpers.mjs';
 import { parseConfig } from '../service/config.ts';
-import { equalHash, crc32c, utf8 } from '../service/encoding.ts';
+import { equalHash, crc32c, utf8, base64url } from '../service/encoding.ts';
 import { errorResponse } from '../service/app.ts';
 import { kmsJson } from '../service/transport.ts';
 
@@ -18,6 +18,42 @@ test('Wasm HTTP roundtrips preserve empty, Unicode, and maximum UTF-8 text; fres
     assert.deepEqual(await response.json(), { plaintext });
   }
   assert.notDeepEqual(await encrypt(app), await encrypt(app));
+});
+test('binary plaintext roundtrips as raw octets; text stays JSON unless bytes are requested', async () => {
+  const app = appWith(), bytes = { accept: 'application/octet-stream' };
+  const decrypt = (envelope, headers = {}) => app.fetch(new Request('http://localhost/v1/decrypt', { method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...headers }, body: JSON.stringify({ envelope, context }) }));
+  const seal = async data => (await (await app.fetch(request('/v1/encrypt', { plaintextBase64url: base64url(data), context, key: 'primary' }))).json()).envelope;
+  for (const data of [new Uint8Array(0), new Uint8Array([0xff, 0x00, 0xfe]), crypto.getRandomValues(new Uint8Array(32)), new Uint8Array(65536).fill(0x80)]) {
+    const response = await decrypt(await seal(data), bytes);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'application/octet-stream');
+    assert.equal(response.headers.get('cache-control'), 'no-store'); assert.ok(response.headers.get('x-request-id'));
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), data);
+  }
+  // Opening worked, so a binary envelope read as text is its own non-retryable code, not DECRYPT_FAILED.
+  const binary = await seal(new Uint8Array([0xff]));
+  const refused = await decrypt(binary);
+  assert.equal(refused.status, 406); assert.deepEqual((({ code, retryable }) => ({ code, retryable }))((await refused.json()).error), { code: 'PLAINTEXT_NOT_TEXT', retryable: false });
+  assert.equal((await decrypt(binary, { accept: 'application/json, application/octet-stream;q=0.5' })).status, 200);
+  // q=0 excludes a representation, so it must not select bytes.
+  for (const accept of ['application/json, application/octet-stream;q=0', 'application/octet-stream; q=0.000']) assert.equal((await decrypt(binary, { accept })).status, 406, accept);
+  // Text envelopes read either way, a leading BOM survives, and other Accept values keep JSON.
+  const text = await encrypt(app, '﻿秘密');
+  assert.deepEqual(new Uint8Array(await (await decrypt(text, bytes)).arrayBuffer()), utf8.encode('﻿秘密'));
+  for (const accept of ['text/plain', '*/*', 'application/octet-streamx']) assert.deepEqual(await (await decrypt(text, { accept })).json(), { plaintext: '﻿秘密' });
+  assert.equal(await (await decrypt(await seal(utf8.encode('same text')))).json().then(r => r.plaintext), 'same text');
+  // Errors stay JSON when bytes were requested.
+  const failed = await decrypt({ ...binary, nonce: binary.nonce[0] === 'A' ? `B${binary.nonce.slice(1)}` : `A${binary.nonce.slice(1)}` }, bytes);
+  assert.equal(failed.status, 400); assert.equal((await failed.json()).error.code, 'DECRYPT_FAILED');
+  for (const [body, path] of [
+    [{ plaintext: 'x', plaintextBase64url: 'eA', context, key: 'primary' }, '$'],
+    ...['AP8=', 'AP9', '+/8', 'not base64!', 'A'.repeat(87383), 42, null].map(v => [{ plaintextBase64url: v, context, key: 'primary' }, '$.plaintextBase64url']),
+    [{ plaintextBase64url: base64url(new Uint8Array(65537)), context, key: 'primary' }, '$.plaintextBase64url'],
+  ]) {
+    const { error } = await (await app.fetch(request('/v1/encrypt', body))).json();
+    assert.equal(error.code, 'INVALID_REQUEST'); assert.equal(error.path, path, JSON.stringify(body).slice(0, 80));
+  }
 });
 test('auth, tenant, operation and key permissions are independent checks', async () => {
   const app = appWith(); const envelope = await encrypt(app);

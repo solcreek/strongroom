@@ -25,7 +25,14 @@ const context = { tenantId: 'your-tenant', recordId: 'credential-id', purpose: '
 const envelope = await client.encrypt({ key: 'primary', plaintext: userSuppliedApiKey, context });
 // Persist the envelope; rebuild the context from trusted application metadata at use time.
 const apiKey = await client.decrypt({ envelope, context });
+
+// Binary secrets (e.g. a 32-byte data key): a Uint8Array in, a Uint8Array out, never a string.
+const sealed = await client.encrypt({ key: 'primary', plaintext: dataKey, context });
+const key = await client.decryptBytes({ envelope: sealed, context });
+try { useKey(key); } finally { key.fill(0); }
 ```
+
+Always read data keys with `decryptBytes`. `decrypt` returns any plaintext that happens to be valid UTF-8 as a string, and fails with `PLAINTEXT_NOT_TEXT` only for bytes that are not.
 
 `StrongroomError` exposes `code`, `status`, `retryable`, `requestId`, `path` (the offending input field) and `toJSON()`. Calls accept `{signal}`; the default deadline is 20 seconds; redirects are rejected; HTTP is allowed only on loopback; nothing is retried automatically. For a Cloud Run service with invoker IAM, pass `cloudRunIdToken`. Provide a custom `fetch` for Worker service bindings or other platform authentication.
 
@@ -36,6 +43,8 @@ strongroom --help                     # JSON description of every command, flag 
 strongroom schema encrypt             # offline JSON Schema
 strongroom encrypt --input request.json --output envelope.json
 strongroom decrypt --envelope envelope.json --output plaintext.json < context.json
+strongroom encrypt --plaintext-file dek.bin < key-and-context.json   # raw bytes in
+strongroom decrypt --envelope dek.json --plaintext-file out.bin < context.json   # raw bytes out, new 0600 file
 strongroom doctor                     # readiness and API version
 strongroom probe --key primary --tenant acme   # real KMS roundtrip through the service
 strongroom token --token-file app-token --tenant acme --keys primary

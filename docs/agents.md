@@ -99,10 +99,12 @@ printf '%s' '{"context":{"tenantId":"development","recordId":"user-123/openai","
 
 `--envelope` accepts an encrypt result (`{envelope}`) or a bare envelope. Without it, stdin carries the full `{envelope, context}` DecryptInput.
 
+Binary plaintext (a data key, say) stays in files: `encrypt --plaintext-file FILE` reads raw bytes and takes `{context, key}` on stdin; `decrypt --plaintext-file FILE` writes raw bytes to a new 0600 file and prints `{plaintextFile, bytes}`. Always use it for binary secrets. Without it, plaintext that happens to be valid UTF-8 goes to stdout as JSON text; only bytes that are not valid UTF-8 fail with `PLAINTEXT_NOT_TEXT` (exit 4).
+
 The output file contains plaintext. Do not include it in agent transcripts, logs or commits. Remove it when no longer needed. A decrypt operation returns a secret by design; use only the information the authorized workflow needs.
 
 ## SDK
 
-`Strongroom.encrypt` returns an `Envelope`; `Strongroom.decrypt` returns a string. Calls accept `{signal}` for cancellation. `StrongroomError` has `code`, `status`, `retryable`, `requestId` and `toJSON()`. The client has a 20-second default timeout and does not automatically retry encryption. Supply a custom `fetch` for Worker service bindings, tracing that excludes bodies, or platform authentication.
+`Strongroom.encrypt` returns an `Envelope` and accepts a string or `Uint8Array` plaintext; `Strongroom.decrypt` returns a string, and `Strongroom.decryptBytes` returns a `Uint8Array` to wipe with `fill(0)` after use. Calls accept `{signal}` for cancellation. `StrongroomError` has `code`, `status`, `retryable`, `requestId` and `toJSON()`. The client has a 20-second default timeout and does not automatically retry encryption. Supply a custom `fetch` for Worker service bindings, tracing that excludes bodies, or platform authentication.
 
 The service does not offer autonomous agent execution or MCP. Agent compatibility comes from explicit schemas, bounded noninteractive commands, predictable outputs and stable authorization. Adding more tools must preserve these contracts.

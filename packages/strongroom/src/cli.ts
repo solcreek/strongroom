@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { Strongroom, StrongroomError } from './client.ts';
@@ -11,8 +11,8 @@ import { setupGcp, teardownGcp } from './setup-gcp.ts';
 const help = {
   name: 'strongroom', version: capabilities.version, nonInteractive: true,
   commands: {
-    encrypt: 'Read EncryptInput JSON from stdin or --input FILE; return {envelope}.',
-    decrypt: 'Read DecryptInput JSON from stdin or --input FILE; return {plaintext}. With --envelope FILE (an encrypt result or a bare envelope), the input is just {context}.',
+    encrypt: 'Read EncryptInput JSON from stdin or --input FILE; return {envelope}. With --plaintext-file FILE (raw bytes, e.g. a data key), the input is just {context, key}.',
+    decrypt: 'Read DecryptInput JSON from stdin or --input FILE; return {plaintext}. With --envelope FILE (an encrypt result or a bare envelope), the input is just {context}. With --plaintext-file FILE, the raw bytes go to that NEW 0600 file and stdout returns {plaintextFile, bytes}.',
     schema: 'Return OpenAPI; schema encrypt or schema decrypt returns the input JSON Schema. No network or credentials needed.',
     capabilities: 'Return local CLI/API capabilities. No network or credentials needed.',
     doctor: 'Check remote readiness and API version. Does not exercise token permissions or KMS; use probe.',
@@ -25,7 +25,7 @@ const help = {
     'teardown aws': 'Inverse of setup aws: delete the IAM user and its access keys (or the role policy). The KMS key is kept unless --delete-key, which schedules deletion in 7 days.',
     token: 'Write a new random bearer token to a NEW --token-file FILE (mode 0600); return its SHA-256 digest, and a principal entry when --tenant and --keys are given.',
   },
-  flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'token: principal tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--key': 'probe and setup: key reference (setup default primary)', '--name': 'setup/teardown: KMS alias and IAM user name (default strongroom)', '--region': 'setup/teardown: AWS region (default: profile region)', '--profile': 'setup/teardown: aws CLI profile', '--role-name': 'setup/teardown: existing ECS task / EKS pod role to grant instead of creating a user', '--dry-run': 'setup: print the plan only (no value)', '--delete-key': 'teardown: also schedule KMS key deletion (no value)', '--no-verify': 'setup: skip the live Encrypt/Decrypt check (no value)', '--project': 'setup/teardown gcp: project (default: gcloud config)', '--location': 'setup/teardown gcp: Cloud KMS location (default global)', '--keyring': 'setup/teardown gcp: key ring (default --name)', '--service-account': 'setup/teardown gcp: existing workload service account to grant instead of creating one', '--protection-level': 'setup gcp: software (default) or hsm', '--envelope': 'decrypt: file holding {envelope} or an envelope', '--record': 'probe: recordId (default strongroom-probe)', '--help': 'This JSON document', '--version': 'JSON version' },
+  flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'token: principal tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--key': 'probe and setup: key reference (setup default primary)', '--name': 'setup/teardown: KMS alias and IAM user name (default strongroom)', '--region': 'setup/teardown: AWS region (default: profile region)', '--profile': 'setup/teardown: aws CLI profile', '--role-name': 'setup/teardown: existing ECS task / EKS pod role to grant instead of creating a user', '--dry-run': 'setup: print the plan only (no value)', '--delete-key': 'teardown: also schedule KMS key deletion (no value)', '--no-verify': 'setup: skip the live Encrypt/Decrypt check (no value)', '--project': 'setup/teardown gcp: project (default: gcloud config)', '--location': 'setup/teardown gcp: Cloud KMS location (default global)', '--keyring': 'setup/teardown gcp: key ring (default --name)', '--service-account': 'setup/teardown gcp: existing workload service account to grant instead of creating one', '--protection-level': 'setup gcp: software (default) or hsm', '--envelope': 'decrypt: file holding {envelope} or an envelope', '--plaintext-file': 'encrypt: read raw plaintext bytes from FILE; decrypt: write raw plaintext bytes to a NEW 0600 FILE','--record': 'probe: recordId (default strongroom-probe)', '--help': 'This JSON document', '--version': 'JSON version' },
   environment: ['STRONGROOM_URL', 'STRONGROOM_TOKEN', 'STRONGROOM_TOKEN_FILE', 'STRONGROOM_CLOUD_RUN_ID_TOKEN (Cloud Run invoker IAM, e.g. $(gcloud auth print-identity-token))'],
   output: { success: 'One JSON object on stdout, or --output FILE.', error: 'One JSON error object on stderr. No stack traces.' },
   exitCodes: { '0': 'success', '2': 'input/configuration error', '3': 'authentication/authorization error', '4': 'request/decryption rejected', '5': 'retryable network/provider error', '6': 'service KMS credentials or key need operator action; do not retry unchanged', '1': 'other failure' },
@@ -114,7 +114,7 @@ async function main() {
   const booleans = ['--dry-run', '--delete-key', '--no-verify'];
   const allowed = command === 'setup' && schemaName === 'gcp' ? ['--name', '--tenant', '--key', '--project', '--location', '--keyring', '--service-account', '--protection-level', '--directory', '--dry-run', '--no-verify', '--output']
     : command === 'teardown' && schemaName === 'gcp' ? ['--name', '--key', '--project', '--location', '--keyring', '--service-account', '--delete-key', '--output']
-    : command === 'setup' ? ['--name', '--tenant', '--key', '--region', '--profile', '--role-name', '--directory', '--dry-run', '--no-verify', '--output'] : command === 'teardown' ? ['--name', '--region', '--profile', '--role-name', '--delete-key', '--output'] : command === 'init' ? ['--directory', '--output'] : command === 'token' ? ['--token-file', '--tenant', '--keys', '--permissions', '--output'] : command === 'probe' ? ['--key', '--tenant', '--record', '--output'] : command === 'decrypt' ? ['--input', '--output', '--envelope'] : ['encrypt', 'config-check'].includes(command) ? ['--input', '--output'] : ['--output'];
+    : command === 'setup' ? ['--name', '--tenant', '--key', '--region', '--profile', '--role-name', '--directory', '--dry-run', '--no-verify', '--output'] : command === 'teardown' ? ['--name', '--region', '--profile', '--role-name', '--delete-key', '--output'] : command === 'init' ? ['--directory', '--output'] : command === 'token' ? ['--token-file', '--tenant', '--keys', '--permissions', '--output'] : command === 'probe' ? ['--key', '--tenant', '--record', '--output'] : command === 'decrypt' ? ['--input', '--output', '--envelope', '--plaintext-file'] : command === 'encrypt' ? ['--input', '--output', '--plaintext-file'] : command === 'config-check' ? ['--input', '--output'] : ['--output'];
   while (argv.length) {
     const flag = argv.shift()!;
     if (!allowed.includes(flag) || Object.hasOwn(options, flag)) fail('Unknown or repeated option. Run --help.');
@@ -156,7 +156,24 @@ async function main() {
           if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).join() !== 'context') fail('With --envelope, input must be exactly {"context": {...}}.');
           input = { envelope, context: (input as { context: unknown }).context };
         }
-        result = command === 'encrypt' ? { envelope: await client.encrypt(input as never) } : { plaintext: await client.decrypt(input as never) };
+        const file = options['--plaintext-file'];
+        if (file && command === 'encrypt') {
+          if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).sort().join() !== 'context,key') fail('With --plaintext-file, input must be exactly {"context": {...}, "key": "..."}.');
+          // Bound the read itself: stat cannot size a FIFO or a file that grows while it is read.
+          const buffer = Buffer.alloc(capabilities.maxPlaintextBytes + 1);
+          try {
+            let size = 0;
+            const handle = await open(file, 'r');
+            try {
+              for (let n = 1; n > 0 && size < buffer.length; size += n) n = (await handle.read(buffer, size, buffer.length - size, null)).bytesRead;
+            } finally { await handle.close(); }
+            if (size > capabilities.maxPlaintextBytes) fail(`Plaintext file exceeds ${capabilities.maxPlaintextBytes} bytes.`);
+            result = { envelope: await client.encrypt({ ...(input as object), plaintext: buffer.subarray(0, size) } as never) };
+          } finally { buffer.fill(0); }
+        } else if (file) {
+          const plaintext = await client.decryptBytes(input as never);
+          try { await writeFile(file, plaintext, { mode: 0o600, flag: 'wx' }); result = { plaintextFile: resolve(file), bytes: plaintext.length }; } finally { plaintext.fill(0); }
+        } else result = command === 'encrypt' ? { envelope: await client.encrypt(input as never) } : { plaintext: await client.decrypt(input as never) };
       }
       break;
     }
