@@ -26,7 +26,8 @@ async function provision(tenant, version = 1) {
 }
 
 // Unwrap the DEK as bytes, import it as a non-extractable key, and wipe the bytes straight away.
-// The process then holds only an opaque CryptoKey; nothing in memory is a string copy of the key.
+// The unwrap path never makes a string, so the one buffer this code owns is wiped. Wrapping still
+// sends the new DEK as base64url text, which no runtime can wipe (docs/security.md).
 async function open(tenant, version = 1, files = volume) {
   const envelope = JSON.parse(new TextDecoder().decode(files.get(`${tenant}/dek/v${version}.json`)));
   const raw = await strongroom(tenant).decryptBytes({ envelope, context: dekContext(tenant, version) });
@@ -60,6 +61,12 @@ try {
   // Bulk files never touch Strongroom: a 1 MiB file is one local AES-GCM call under the unwrapped DEK.
   await writeFile('acme', acmeKeys[1], 1, 'index.bin', 'x'.repeat(1 << 20));
   step('read', { acme: await readFile('acme', acmeKeys, 'notes.db'), bulkBytes: (await readFile('acme', acmeKeys, 'index.bin')).length });
+
+  // The path is authenticated: the same bytes copied to another path no longer decrypt, even under the right DEK.
+  volume.set('acme/moved.db', volume.get('acme/notes.db'));
+  await assert.rejects(readFile('acme', acmeKeys, 'moved.db'), { name: 'OperationError' });
+  volume.delete('acme/moved.db');
+  step('moved-file-rejected', { decrypts: false });
 
   // Tenants never share a deployment: acme's wrapped DEK sent to globex's deployment is refused.
   const acmeEnvelope = JSON.parse(new TextDecoder().decode(volume.get('acme/dek/v1.json')));

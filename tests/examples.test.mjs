@@ -26,7 +26,7 @@ test('examples run end to end and keep secrets out of what they store and show',
   assert.deepEqual(oauth.find(s => s.step === 'retryable-before-refresh'), { step: 'retryable-before-refresh', leaseReleased: true, retried: 'refreshed' });
 
   const data = await run('tenant-data-keys');
-  assert.deepEqual(data.map(s => s.step), ['files-written', 'read', 'cross-tenant-refused', 'rotated', 'shredded']);
+  assert.deepEqual(data.map(s => s.step), ['files-written', 'read', 'moved-file-rejected', 'cross-tenant-refused', 'rotated', 'shredded']);
   assert.equal(data[0].plaintextOnVolume, false); assert.equal(data.at(-1).globexSnapshotReadable, false);
 
   const agent = await run('agent-tools');
