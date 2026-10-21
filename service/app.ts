@@ -133,9 +133,9 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log
       try {
         try { plaintext = unbase64url(run({ op: 'open', ...input, dek: base64url(dek) }).plaintext); } catch { throw decryptFailed(); }
       } finally { dek.fill(0); }
-      // The body streams from this buffer, so it cannot be wiped before the response is sent.
-      if (wantsBytes(request)) return new Response(plaintext, { status: 200, headers: headers('application/octet-stream', requestId) });
       try {
+        // Fetch copies a BufferSource body when the Response is built, so this buffer can be wiped right after.
+        if (wantsBytes(request)) return new Response(plaintext, { status: 200, headers: headers('application/octet-stream', requestId) });
         // ignoreBOM keeps a leading U+FEFF that was part of the encrypted text.
         let text: string;
         try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(plaintext); } catch { throw notText(); }
