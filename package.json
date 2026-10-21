@@ -16,7 +16,7 @@
     "test:poc": "node scripts/build.mjs && node --test tests/crypto.test.mjs",
     "build:host": "node scripts/build-service.mjs && node scripts/build-sdk.mjs",
     "test:rust": "node scripts/test-rust.mjs",
-    "test:fast": "node --test tests/service.test.mjs tests/providers.test.mjs tests/sdk.test.mjs tests/cli.test.mjs tests/setup.test.mjs tests/setup-gcp.test.mjs tests/runtime.test.mjs",
+    "test:fast": "node --test tests/service.test.mjs tests/providers.test.mjs tests/sdk.test.mjs tests/cli.test.mjs tests/setup.test.mjs tests/setup-gcp.test.mjs tests/runtime.test.mjs tests/examples.test.mjs",
     "coverage": "c8 npm run test:fast",
     "verify": "npm run build && npm run check && npm run test:rust && npm run coverage",
     "dev:init": "node packages/strongroom/dist/cli.js init",

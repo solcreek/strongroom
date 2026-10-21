@@ -33,6 +33,8 @@ In another terminal, run the complete SDK example:
 node --env-file=.strongroom/client.env examples/byok.mjs
 ```
 
+[examples/](examples/) has four runnable apps for common designs: bring-your-own API keys, rotating OAuth tokens, per-tenant data keys with crypto-shredding, and agent tools that use credentials they never see. The same page compares Strongroom with calling AWS KMS or Cloud KMS yourself, including when to call KMS directly.
+
 Or let an agent read the schema first, then use the CLI through stdin:
 
 ```sh
