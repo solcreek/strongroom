@@ -89,6 +89,8 @@ test('setup aws reuses this tenant\'s existing key and grants a role instead of 
   const r = await run([...base, '--directory', join(dir, 'out'), '--role-name', 'task'], scenario);
   assert.equal(r.code, 0, r.stderr);
   assert.ok(!r.ops.includes('kms create-key') && !r.ops.includes('iam create-user'));
+  // Named per deployment, so a role shared by several tenants never has one tenant's grant overwritten.
+  assert.ok(r.calls.find(c => c[1] === 'put-role-policy').includes('strongroom-kms-sr-test'));
   assert.deepEqual(JSON.parse(await readFile(join(dir, 'out', 'config.json'), 'utf8')).keys.primary, { provider: 'aws', region: 'us-east-1', keyId: arn, containerCredentials: true });
   assert.equal(JSON.parse(r.stdout).verified.ok, false);
   assert.doesNotMatch(JSON.parse(r.stdout).teardown, /--delete-key/);
@@ -156,7 +158,8 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
     'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'app', TagValue: 'strongroom' }, { TagKey: 'strongroom-tenant', TagValue: tenantTag('acme') }] } }, 'kms schedule-key-deletion': { stdout: { DeletionDate: '2026-10-20' } } };
   const r = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);
   assert.equal(r.code, 0, r.stderr);
-  assert.deepEqual(r.ops, ['iam list-user-tags', 'iam list-access-keys', 'iam delete-access-key', 'iam delete-access-key', 'iam delete-user-policy', 'iam delete-user', 'kms describe-key', 'kms list-resource-tags', 'kms delete-alias', 'kms schedule-key-deletion']);
+  // Every ownership check (user, then key) runs before the first deletion.
+  assert.deepEqual(r.ops, ['iam list-user-tags', 'kms describe-key', 'kms list-resource-tags', 'iam list-access-keys', 'iam delete-access-key', 'iam delete-access-key', 'iam delete-user-policy', 'iam delete-user', 'kms delete-alias', 'kms schedule-key-deletion']);
   // Resources tagged for another tenant, or not created by setup, are refused before anything is deleted.
   const mutating = ops => ops.filter(o => /delete|schedule/.test(o));
   const foreignUser = await run(['teardown', 'aws', '--tenant', 'globex', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);
@@ -165,12 +168,18 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
   assert.equal(untagged.code, 2); assert.deepEqual(mutating(untagged.ops), []);
   const foreignKey = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'],
     { ...present, 'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'strongroom-tenant', TagValue: tenantTag('globex') }] } } });
-  assert.equal(foreignKey.code, 2); assert.ok(!foreignKey.ops.includes('kms schedule-key-deletion') && !foreignKey.ops.includes('kms delete-alias'));
+  // A foreign key with --delete-key stops the whole teardown: the user is not deleted either.
+  assert.equal(foreignKey.code, 2); assert.deepEqual(mutating(foreignKey.ops), []);
   assert.ok(r.calls.find(c => c[1] === 'schedule-key-deletion').includes('7'));
   const kept = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1'], present);
   assert.ok(!kept.ops.some(o => o.startsWith('kms')) && JSON.parse(kept.stdout).keptKey);
   const absent = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': err('NotFoundException', 'DescribeKey') });
   assert.equal(absent.code, 0); assert.deepEqual(JSON.parse(absent.stdout).absent, ['iamUser', 'kmsKey']);
-  const role = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1', '--role-name', 'task'], {});
-  assert.deepEqual(role.ops, ['iam delete-role-policy']);
+  // A shared role keeps one policy per deployment; teardown removes this one only if its key is this tenant's.
+  const granted = { 'iam get-role-policy': { stdout: { PolicyDocument: { Statement: [{ Resource: arn }] } } }, 'kms list-resource-tags': present['kms list-resource-tags'] };
+  const role = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--role-name', 'task'], granted);
+  assert.equal(role.code, 0, role.stderr); assert.deepEqual(role.ops, ['iam get-role-policy', 'kms list-resource-tags', 'iam delete-role-policy']);
+  assert.ok(role.calls.find(c => c[1] === 'delete-role-policy').includes('strongroom-kms-sr-test'));
+  const otherRole = await run(['teardown', 'aws', '--tenant', 'globex', '--name', 'sr-test', '--region', 'us-east-1', '--role-name', 'task'], granted);
+  assert.equal(otherRole.code, 2); assert.deepEqual(mutating(otherRole.ops), []);
 });

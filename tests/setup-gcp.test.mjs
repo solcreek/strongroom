@@ -156,8 +156,14 @@ test('teardown gcp removes the grant and account, destroys versions only on requ
   assert.ok(!kept.calls.some(c => c[2] === 'versions') && JSON.parse(kept.stdout).keptKey);
   const absent = await run([...td, '--delete-key'], { 'kms keys remove-iam-policy-binding': { stderr: 'ERROR: Policy binding with the specified principal, role, and condition not found!\n' }, 'iam service-accounts list': { stdout: [] }, 'kms keys describe': err('NOT_FOUND', 'kms.keys.describe'), 'kms keys versions list': err('NOT_FOUND', 'kms.keys.versions.list') });
   assert.equal(absent.code, 0, absent.stderr); assert.deepEqual(JSON.parse(absent.stdout).absent, ['keyBinding', 'serviceAccount', 'cryptoKey']);
-  const workload = await run([...td, '--service-account', 'run@other.iam.gserviceaccount.com'], {});
-  assert.deepEqual(workload.calls.map(c => c[2]), ['remove-iam-policy-binding']);
+  // A workload's binding is removed only from a key setup created (for this tenant, with --tenant).
+  const workload = await run([...td, '--service-account', 'run@other.iam.gserviceaccount.com'], { 'kms keys describe': present['kms keys describe'] });
+  assert.deepEqual(workload.calls.map(c => c[2]), ['describe', 'remove-iam-policy-binding']);
+  const otherWorkload = await run([...td, '--tenant', 'globex', '--service-account', 'run@other.iam.gserviceaccount.com'], { 'kms keys describe': present['kms keys describe'] });
+  assert.equal(otherWorkload.code, 2); assert.deepEqual(mutating(otherWorkload.calls), []);
+  // A 0.1.0 account (no description yet, setup's display name) can still be torn down by --name.
+  const legacy = await run(td, { ...present, 'iam service-accounts list': { stdout: [{ email, displayName: 'Strongroom (sr-test)' }] } });
+  assert.equal(legacy.code, 0, legacy.stderr); assert.ok(legacy.calls.some(c => c[2] === 'delete'));
 });
 test('setup gcp names resources after the tenant and fixes the destroy-scheduled duration at creation', async t => {
   const { dir, run } = await harness(t);
@@ -182,7 +188,7 @@ test('setup gcp names resources after the tenant and fixes the destroy-scheduled
     assert.equal(bad.code, 2, value); assert.equal(JSON.parse(bad.stderr).error.path, '--destroy-scheduled-duration'); assert.deepEqual(bad.calls, []);
   }
   // Teardown finds the same resources from the tenant alone, and needs one of --tenant or --name.
-  const td = await run(['teardown', 'gcp', '--tenant', 'acme', '--project', 'demo-project'], { 'iam service-accounts list': { stdout: [] } });
+  const td = await run(['teardown', 'gcp', '--tenant', 'acme', '--project', 'demo-project'], { 'iam service-accounts list': { stdout: [] }, 'kms keys describe': { stdout: { labels: { 'strongroom-tenant': tenantTag('acme') } } } });
   assert.equal(td.code, 0, td.stderr);
   const unbound = td.calls.find(c => c[2] === 'remove-iam-policy-binding');
   assert.equal(unbound[unbound.indexOf('--keyring') + 1], acme); assert.ok(unbound.includes(`serviceAccount:${acme}@demo-project.iam.gserviceaccount.com`));

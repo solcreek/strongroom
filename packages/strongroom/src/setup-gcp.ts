@@ -159,11 +159,13 @@ export async function teardownGcp(options: Record<string, string>) {
   const marker = tenant ? `strongroom-tenant=${tenantTag(tenant)}` : 'strongroom-tenant=';
   const refuse = (what: string) => new SetupError('NOT_OWNED', `${what} was not created by setup${tenant ? ' for this tenant' : ''}; teardown changed nothing.`, 0, { resource: what, next: 'Check --tenant or --name.' });
   const account = workload ? undefined : (await gcloud(['iam', 'service-accounts', 'list', `--filter=email=${email}`]))[0];
-  if (account && !String(account.description ?? '').startsWith(marker)) throw refuse(`Service account ${email}`);
-  if (deleteKey) {
-    const key = await gcloud(['kms', 'keys', 'describe', keyRef, ...ring]).catch(e => { if (notFound(e)) return undefined; throw e; });
-    if (key && !(tenant ? key.labels?.['strongroom-tenant'] === tenantTag(tenant) : key.labels?.app === 'strongroom')) throw refuse(`CryptoKey ${keyRef}`);
-  }
+  // With only --name, an account 0.1.0 created (no description yet, setup's display name) also counts as setup's.
+  const setupAccount = (a: { description?: string; displayName?: string }) => String(a.description ?? '').startsWith(marker) || (!tenant && !a.description && a.displayName === `Strongroom (${name})`);
+  if (account && !setupAccount(account)) throw refuse(`Service account ${email}`);
+  // Checked even without --delete-key: removing a binding also changes the key, and a workload's binding on
+  // another tenant's key is that tenant's grant.
+  const key = await gcloud(['kms', 'keys', 'describe', keyRef, ...ring]).catch(e => { if (notFound(e)) return undefined; throw e; });
+  if (key && !(tenant ? key.labels?.['strongroom-tenant'] === tenantTag(tenant) : key.labels?.app === 'strongroom')) throw refuse(`CryptoKey ${keyRef}`);
   const binding = await gcloud(['kms', 'keys', 'remove-iam-policy-binding', keyRef, ...ring, '--member', `serviceAccount:${email}`, '--role', role])
     .then(() => true, e => { if (notFound(e) || (e instanceof SetupError && e.code === 'GCP_ERROR' && !e.details.gcpCode)) return false; throw e; });
   if (binding) removed.push({ keyBinding: email }); else absent.push('keyBinding');

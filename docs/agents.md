@@ -66,6 +66,7 @@ Defaults: `--name` derived from `--tenant`, `--key primary`, region from the pro
 | `AWS_PERMISSION_DENIED` | 3 | The operator lacks `error.requiredPermissions`; `error.created` and `error.cleanup` list anything already made |
 | `RESOURCE_EXISTS` | 2 | Choose another `--name`, or run the suggested teardown |
 | `KEY_UNUSABLE` | 2 | `alias/NAME` points at a disabled or non-symmetric key; choose another `--name` |
+| `NOT_OWNED` | 2 | The key, identity or role grant is marked for another tenant, or was not created by setup; check `--tenant` and `--name`. Nothing was changed |
 | `INVALID_INPUT` | 2 | `error.path` names the flag to fix |
 | `AWS_ERROR` | 1 | Unexpected AWS failure; `error.awsCode` and `error.operation` identify it |
 
@@ -91,7 +92,7 @@ Defaults: `--name` derived from `--tenant` (an explicit one must be 6-30 lowerca
 | `GCP_PERMISSION_DENIED` | 3 | The operator lacks `error.requiredPermissions` (`roles/cloudkms.admin` with `roles/iam.serviceAccountAdmin` and `roles/iam.serviceAccountKeyAdmin` cover them) |
 | `GCP_ORG_POLICY` | 3 | The organization forbids service account keys; use `--service-account` on Cloud Run/GKE |
 | `GCP_API_DISABLED` | 2 | Enable `cloudkms.googleapis.com` |
-| `RESOURCE_EXISTS` / `KEY_UNUSABLE` / `INVALID_INPUT` | 2 | As for AWS |
+| `RESOURCE_EXISTS` / `KEY_UNUSABLE` / `NOT_OWNED` / `INVALID_INPUT` | 2 | As for AWS |
 | `GCP_ERROR` | 1 | Unexpected; `error.gcpCode` and `error.operation` identify it |
 
 ## Decrypt an existing CLI result
