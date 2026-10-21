@@ -124,11 +124,7 @@ pub fn inspect(env: &Envelope, ctx: &Context) -> Result<Vec<u8>, &'static str> {
     aad(&env.key, ctx)
 }
 
-pub fn open(
-    env: &Envelope,
-    ctx: &Context,
-    dek: &[u8],
-) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+pub fn open(env: &Envelope, ctx: &Context, dek: &[u8]) -> Result<Zeroizing<Vec<u8>>, &'static str> {
     let aad = inspect(env, ctx)?;
     crypt(
         false,
