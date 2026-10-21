@@ -76,6 +76,14 @@ const apiKey = await strongroom.decrypt({ envelope: stored.envelope, context });
 // Pass apiKey to the third-party API; never log it.
 ```
 
+Binary secrets such as data keys go in as a `Uint8Array` and come back as one, never as a string, so you can wipe them:
+
+```ts
+const sealed = await strongroom.encrypt({ key: 'primary', plaintext: dataKey, context });
+const key = await strongroom.decryptBytes({ envelope: sealed, context });
+try { useKey(key); } finally { key.fill(0); }
+```
+
 One Strongroom token is bound to one tenant. Your application must still verify that the user may access the given credential. Context is not a password and not a substitute for authorization; never put an API key in the context.
 
 ## Development and verification

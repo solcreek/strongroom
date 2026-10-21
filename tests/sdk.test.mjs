@@ -16,6 +16,29 @@ test('SDK roundtrip against actual Rust Wasm and HTTP contract', async () => {
   const restricted = new Strongroom({ ...options, token: encryptToken, fetch: (url, init) => app.fetch(new Request(url, init)) });
   await assert.rejects(restricted.decrypt({ envelope, context }), { status: 403, code: 'FORBIDDEN' });
 });
+test('SDK sends Uint8Array plaintext as bytes and decryptBytes returns a wipeable Uint8Array', async () => {
+  const app = appWith(); const seen = [];
+  const client = new Strongroom({ ...options, fetch: (url, init) => { seen.push(init); return app.fetch(new Request(url, init)); } });
+  const key = crypto.getRandomValues(new Uint8Array(32));
+  const envelope = await client.encrypt({ key: 'primary', context, plaintext: key });
+  assert.deepEqual(Object.keys(JSON.parse(seen[0].body)).sort(), ['context', 'key', 'plaintextBase64url']);
+  const opened = await client.decryptBytes({ envelope, context });
+  assert.ok(opened instanceof Uint8Array); assert.deepEqual(opened, key);
+  assert.equal(seen[1].headers.accept, 'application/octet-stream'); assert.equal(seen[0].headers.accept, undefined);
+  opened.fill(0); assert.ok(opened.every(b => b === 0));
+  assert.deepEqual(await client.decryptBytes({ envelope: await client.encrypt({ key: 'primary', context, plaintext: 'text' }), context }), new TextEncoder().encode('text'));
+  await assert.rejects(client.decrypt({ envelope, context }), { code: 'PLAINTEXT_NOT_TEXT', status: 406, retryable: false });
+  await assert.rejects(client.decryptBytes({ envelope, context: { ...context, purpose: 'wrong' } }), { code: 'DECRYPT_FAILED' });
+  // A service that ignores Accept answers JSON; its body must never be handed back as key bytes.
+  const old = new Strongroom({ ...options, fetch: async () => new Response(JSON.stringify({ plaintext: 'x' }), { headers: { 'content-type': 'application/json' } }) });
+  await assert.rejects(old.decryptBytes({ envelope, context }), { code: 'INVALID_RESPONSE' });
+  // A body that breaks mid-stream wipes the chunks already received.
+  const partial = new Uint8Array([1, 2, 3]);
+  const broken = new Strongroom({ ...options, fetch: async () => new Response(new ReadableStream({ start(c) { c.enqueue(partial); }, pull(c) { c.error(new Error('reset')); } }), { headers: { 'content-type': 'application/octet-stream' } }) });
+  await assert.rejects(broken.decryptBytes({ envelope, context }), { code: 'NETWORK_ERROR' });
+  assert.deepEqual(partial, new Uint8Array(3));
+  await assert.rejects(client.encrypt(undefined), e => e instanceof StrongroomError);
+});
 test('SDK rejects unsafe origins and bad credentials before sending requests', () => {
   for (const url of ['', 'http://remote.example', 'https://name:password@example.com', 'https://example.com/path', 'https://example.com?token=secret']) assert.throws(() => new Strongroom({ ...options, url }), { code: 'INVALID_CONFIG' });
   assert.throws(() => new Strongroom({ ...options, token: 'short' }), { code: 'INVALID_CONFIG' });

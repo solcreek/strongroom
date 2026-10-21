@@ -1,7 +1,7 @@
 import type { Context, Envelope } from '../packages/strongroom/src/types.ts';
 import { fields, keyPattern, object, parseConfig, text, type Bindings, type Principal } from './config.ts';
 import { base64url, equalHash, sha256, unbase64url, utf8 } from './encoding.ts';
-import { decryptFailed, invalid, ServiceError, unavailable } from './errors.ts';
+import { decryptFailed, invalid, notText, ServiceError, unavailable } from './errors.ts';
 import { createProvider } from './providers.ts';
 import { capabilities, openapi } from './contract.ts';
 import type { Fetch } from './transport.ts';
@@ -10,9 +10,12 @@ export type Core = (input: string) => string;
 // Operator events: one JSON object each, never plaintext, tokens, DEKs, configuration values or upstream messages.
 export type Log = (event: Record<string, unknown>) => void;
 export const stderrLog: Log = event => console.error(JSON.stringify(event));
+const headers = (type: string, requestId: string) => ({ 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': requestId });
 export function json(value: unknown, status = 200, requestId = crypto.randomUUID()): Response {
-  return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': requestId } });
+  return new Response(JSON.stringify(value), { status, headers: headers('application/json; charset=utf-8', requestId) });
 }
+// Decrypt answers with raw bytes only when the caller lists application/octet-stream; JSON stays the default.
+const wantsBytes = (request: Request) => (request.headers.get('accept') ?? '').split(',').some(t => t.split(';')[0].trim().toLowerCase() === 'application/octet-stream');
 export function errorResponse(error: unknown, requestId = crypto.randomUUID()): Response {
   const e = error instanceof ServiceError ? error : new ServiceError('INTERNAL_ERROR', 500, 'An internal error occurred.');
   return json({ error: { code: e.code, message: e.message, retryable: e.retryable, requestId, ...(e.path ? { path: e.path } : {}) } }, e.status, requestId);
@@ -83,7 +86,9 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log
       const op = path === '/v1/encrypt' ? 'encrypt' : 'decrypt';
       if (!principal.permissions.includes(op)) throw new ServiceError('FORBIDDEN', 403, 'Operation is not permitted.');
       const input = await body(request);
-      shape(input, '$', op === 'encrypt' ? ['plaintext', 'context', 'key'] : ['envelope', 'context']);
+      // Text arrives as `plaintext`, bytes as `plaintextBase64url`; exactly one of them.
+      const field = Object.hasOwn(input, 'plaintextBase64url') ? 'plaintextBase64url' : 'plaintext';
+      shape(input, '$', op === 'encrypt' ? [field, 'context', 'key'] : ['envelope', 'context']);
       context(input.context);
       const key = op === 'encrypt' ? input.key : object(input.envelope) ? input.envelope.key : undefined;
       if (typeof key !== 'string' || !keyPattern.test(key)) throw invalid(op === 'encrypt' ? '$.key' : '$.envelope.key', 'must be a configured key reference matching ^[A-Za-z0-9_-]{1,64}$.');
@@ -97,26 +102,41 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log
         return error;
       };
       if (op === 'encrypt') {
-        if (typeof input.plaintext !== 'string' || !input.plaintext.isWellFormed() || utf8.encode(input.plaintext).length > capabilities.maxPlaintextBytes) throw invalid('$.plaintext', `must be well-formed text of at most ${capabilities.maxPlaintextBytes} UTF-8 bytes.`);
+        const max = capabilities.maxPlaintextBytes, value = input[field];
+        let plaintext: Uint8Array<ArrayBuffer> | undefined;
+        if (field === 'plaintext') {
+          if (typeof value === 'string' && value.isWellFormed()) plaintext = utf8.encode(value);
+          if (!plaintext || plaintext.length > max) throw invalid('$.plaintext', `must be well-formed text of at most ${max} UTF-8 bytes.`);
+        } else {
+          try { if (typeof value === 'string' && value.length <= Math.ceil(max * 4 / 3)) plaintext = unbase64url(value); } catch { /* reported below */ }
+          if (!plaintext || plaintext.length > max) throw invalid('$.plaintextBase64url', `must be canonical base64url without padding, encoding at most ${max} bytes.`);
+        }
         const entropy = crypto.getRandomValues(new Uint8Array(44));
         try {
           let sealed: { envelope: Envelope; aad: string };
-          try { sealed = run({ op: 'seal', ...input, entropy: base64url(entropy) }); } catch { throw invalid(); }
+          try { sealed = run({ op: 'seal', plaintext: base64url(plaintext), context: input.context, key, entropy: base64url(entropy) }); } catch { throw invalid(); }
           try { sealed.envelope.wrappedKey = await provider.wrap(entropy.subarray(0, 32), unbase64url(sealed.aad)); }
           catch (e) { throw kmsFailure(e); }
           return json({ envelope: sealed.envelope }, 200, requestId);
-        } finally { entropy.fill(0); }
+        } finally { entropy.fill(0); plaintext.fill(0); }
       }
       let inspected: { aad: string };
       try { inspected = run({ op: 'inspect', ...input }); } catch { throw invalid('$.envelope', 'is not a valid version 1 envelope; see schema Envelope.'); }
       let dek: Uint8Array<ArrayBuffer>;
       try { dek = await provider.unwrap((input.envelope as unknown as Envelope).wrappedKey, unbase64url(inspected.aad)); }
       catch (e) { throw kmsFailure(e); }
+      let plaintext: Uint8Array<ArrayBuffer>;
       try {
-        let result: { plaintext: string };
-        try { result = run({ op: 'open', ...input, dek: base64url(dek) }); } catch { throw decryptFailed(); }
-        return json(result, 200, requestId);
+        try { plaintext = unbase64url(run({ op: 'open', ...input, dek: base64url(dek) }).plaintext); } catch { throw decryptFailed(); }
       } finally { dek.fill(0); }
+      // The body streams from this buffer, so it cannot be wiped before the response is sent.
+      if (wantsBytes(request)) return new Response(plaintext, { status: 200, headers: headers('application/octet-stream', requestId) });
+      try {
+        // ignoreBOM keeps a leading U+FEFF that was part of the encrypted text.
+        let text: string;
+        try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(plaintext); } catch { throw notText(); }
+        return json({ plaintext: text }, 200, requestId);
+      } finally { plaintext.fill(0); }
     } catch (error) { return errorResponse(error, requestId); }
   } };
 }

@@ -48,8 +48,8 @@ The key reference and context are authenticated for both the ciphertext and wrap
 
 ## Contracts
 
-- `POST /v1/encrypt`: `{plaintext, context, key}` → `{envelope}`.
-- `POST /v1/decrypt`: `{envelope, context}` → `{plaintext}`.
+- `POST /v1/encrypt`: `{plaintext, context, key}` → `{envelope}`. For binary plaintext such as a data key, send `plaintextBase64url` (canonical base64url without padding, at most 64 KiB decoded) instead of `plaintext`.
+- `POST /v1/decrypt`: `{envelope, context}` → `{plaintext}`. With `Accept: application/octet-stream`, the response body is the raw plaintext bytes instead; errors stay JSON. A plaintext that isn't UTF-8 can only be read that way: the JSON form answers `406 PLAINTEXT_NOT_TEXT`.
 - `GET /v1/capabilities`: limits, operations, error codes and API version.
 - `GET /openapi.json`: OpenAPI 3.1 and JSON Schemas.
 - `GET /healthz`: liveness; does not require configuration or KMS access in Workers.
