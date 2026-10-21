@@ -6,15 +6,17 @@ A SaaS lets each user paste a key for a third-party service (OpenAI, Stripe, a m
 npm run build && node examples/byok-api-keys/main.mjs
 ```
 
-The run stores Alice's key and uses it for a chat call. It then shows three refusals:
+The run stores Alice's key and uses it for a chat call. It then shows:
 
 - the settings service cannot read the key back;
 - Alice's envelope copied into Mallory's row does not open;
-- after rotation, the new key works and the old one is gone.
+- after rotation, the row holds only the new key.
+
+Strongroom envelopes cannot be revoked, so an old envelope in a backup or replica still opens. Retire a leaked key at the provider. To make every copy unreadable, destroy the KMS key ([tenant-data-keys](../tenant-data-keys/)).
 
 ## Common designs
 
-1. **Split callers by job.** The settings page gets an `encrypt`-only token; the worker that calls the provider gets a `decrypt`-only token. A breach of the public-facing settings service then leaks nothing. Both tokens belong to the same tenant's deployment.
+1. **Split callers by job.** The settings page gets an `encrypt`-only token; the worker that calls the provider gets a `decrypt`-only token. Both tokens belong to the same tenant's deployment. A breach of the public-facing settings service then cannot read back any stored key. Keys pasted while it is compromised still pass through it in plaintext, as every secret does at the moment it is submitted.
 2. **Context from trusted identifiers.** `recordId` is built from the authenticated user and the provider name (`user/alice/provider/openai`), never from the request body. Envelopes are bound to that record, so someone with write access to the database cannot move one user's key into another user's row.
 3. **Store a non-secret hint.** Keep `last4` (or a fingerprint) beside the envelope so the UI can show "sk-…1234" without a decrypt. Every decrypt should correspond to a real use.
 4. **Decrypt per use; cache only deliberately.** Strongroom itself never caches plaintext. If one key serves many calls per second, cache the plaintext in the worker for seconds, keyed by the envelope, and accept that the key then lives in that process's memory.

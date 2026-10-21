@@ -34,7 +34,7 @@ try {
 
   step('chat', { reply: await chat('alice', 'hello') });
 
-  // The settings token cannot read keys back, so a bug or breach there leaks nothing.
+  // The settings token cannot read stored keys back. A breach there still sees keys submitted while it lasts.
   await assert.rejects(settings.decrypt({ envelope: row.envelope, context: contextFor('alice', 'openai') }), (e) => e instanceof StrongroomError && e.code === 'FORBIDDEN');
   step('settings-cannot-decrypt', { code: 'FORBIDDEN' });
 
