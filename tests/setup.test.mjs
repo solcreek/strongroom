@@ -186,6 +186,10 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
   assert.deepEqual(r.ops, ['iam list-user-tags', 'kms describe-key', 'kms list-resource-tags', 'iam list-access-keys', 'iam delete-access-key', 'iam delete-access-key', 'iam delete-user-policy', 'iam delete-user', 'kms schedule-key-deletion', 'kms delete-alias']);
   const failedSchedule = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { ...present, 'kms schedule-key-deletion': err('KMSInternalException', 'ScheduleKeyDeletion') });
   assert.notEqual(failedSchedule.code, 0); assert.ok(!failedSchedule.ops.includes('kms delete-alias'));
+  // A failure after the key was scheduled still reports the schedule, and says a rerun resumes.
+  const failedAlias = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { ...present, 'kms delete-alias': err('KMSInternalException', 'DeleteAlias') });
+  const partial = JSON.parse(failedAlias.stderr).error;
+  assert.notEqual(failedAlias.code, 0); assert.ok(partial.removed.some(x => x.kmsKeyScheduledForDeletion === arn)); assert.match(partial.next, /Rerun the same teardown/);
   // A rerun finds the key already pending deletion: reported as scheduled, not scheduled twice.
   const rerun = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'],
     { ...present, 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn, KeyState: 'PendingDeletion', DeletionDate: '2026-10-28' } } } });

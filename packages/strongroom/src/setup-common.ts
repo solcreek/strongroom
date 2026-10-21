@@ -35,6 +35,15 @@ export function resourceName(options: Record<string, string>, command: string): 
   if (options['--tenant']) return tenantName(options['--tenant']);
   throw new SetupError('INVALID_INPUT', `${command} needs --tenant TENANT (resource names follow it) or an explicit --name.`, 0, { path: '--tenant' });
 }
+// Teardown's change phase: a failure partway must still say what was already removed or scheduled (a key
+// pending deletion is irreversible in days), and that rerunning the same command resumes.
+export async function reportPartial(removed: Record<string, string>[], change: () => Promise<void>) {
+  try { await change(); } catch (e) {
+    const error = e instanceof SetupError ? e : new SetupError('TEARDOWN_FAILED', 'Teardown failed partway.', 0);
+    error.details = { ...error.details, removed: [...removed], next: 'Rerun the same teardown command; it resumes from what is left.' };
+    throw error;
+  }
+}
 export async function assertNewDirectory(directory: string) {
   if (await stat(directory).then(() => true, () => false)) throw new SetupError('INVALID_INPUT', 'The output directory already exists; secrets are never overwritten.', 0, { path: '--directory', next: 'Choose a new --directory.' });
 }

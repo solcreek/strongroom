@@ -3,7 +3,7 @@
 // stable error codes with a `next` command, `created` resources on partial failure, and an exact inverse.
 import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
-import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName, tenantTag, shellQuote } from './setup-common.ts';
+import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName, tenantTag, shellQuote, reportPartial } from './setup-common.ts';
 export { SetupError } from './setup-common.ts';
 
 // What the operator running setup needs; printed by --dry-run and on AWS_PERMISSION_DENIED.
@@ -151,7 +151,8 @@ export async function teardownAws(options: Record<string, string>) {
     const region = keyId.startsWith('arn:') ? keyId.split(':')[3] : o.region;
     return ((await cli({ ...o, region })(['kms', 'list-resource-tags', '--key-id', keyId])).Tags ?? []).map((t: { TagKey: string; TagValue: string }) => ({ key: t.TagKey, value: t.TagValue }));
   };
-  let userTags, rolePolicy, key;
+  // aws CLI JSON, read in the check phase and used in the change phase.
+  let userTags: any, rolePolicy: any, key: any;
   if (role) {
     // The role is the operator's; teardown may remove only the grant setup wrote on this tenant's key. Fail
     // closed: the policy must have setup's exact shape (one statement on one key ARN), and that key must carry
@@ -173,26 +174,28 @@ export async function teardownAws(options: Record<string, string>) {
     key = await aws(['kms', 'describe-key', '--key-id', `alias/${name}`]).catch(gone('kmsKey'));
     if (key) owned(await keyTags(key.KeyMetadata.Arn), `KMS key alias/${name}`);
   }
-  if (rolePolicy) { await aws(['iam', 'delete-role-policy', '--role-name', role!, '--policy-name', policyName]); removed.push({ rolePolicy: `${role}/${policyName}` }); }
-  if (userTags) {
-    const keys = await aws(['iam', 'list-access-keys', '--user-name', name]);
-    for (const k of keys.AccessKeyMetadata ?? []) { await aws(['iam', 'delete-access-key', '--user-name', name, '--access-key-id', k.AccessKeyId]); removed.push({ accessKeyId: k.AccessKeyId }); }
-    await aws(['iam', 'delete-user-policy', '--user-name', name, '--policy-name', 'strongroom-kms']).catch(gone('userPolicy'));
-    await aws(['iam', 'delete-user', '--user-name', name]); removed.push({ iamUser: name });
-  }
-  // Deleting the key makes every envelope wrapped by it unrecoverable after the waiting period; it is opt-in.
-  // Schedule first and remove the alias last: if scheduling fails, the alias still leads a rerun to the key.
   let scheduled = false;
-  if (deleteKey && key) {
-    const m = key.KeyMetadata;
-    if (m.KeyState === 'PendingDeletion') removed.push({ kmsKeyAlreadyScheduledForDeletion: m.Arn, deletionDate: m.DeletionDate });
-    else {
-      const r = await aws(['kms', 'schedule-key-deletion', '--key-id', m.Arn, '--pending-window-in-days', '7']);
-      removed.push({ kmsKeyScheduledForDeletion: m.Arn, deletionDate: r.DeletionDate });
+  await reportPartial(removed, async () => {
+    if (rolePolicy) { await aws(['iam', 'delete-role-policy', '--role-name', role!, '--policy-name', policyName]); removed.push({ rolePolicy: `${role}/${policyName}` }); }
+    if (userTags) {
+      const keys = await aws(['iam', 'list-access-keys', '--user-name', name]);
+      for (const k of keys.AccessKeyMetadata ?? []) { await aws(['iam', 'delete-access-key', '--user-name', name, '--access-key-id', k.AccessKeyId]); removed.push({ accessKeyId: k.AccessKeyId }); }
+      await aws(['iam', 'delete-user-policy', '--user-name', name, '--policy-name', 'strongroom-kms']).catch(gone('userPolicy'));
+      await aws(['iam', 'delete-user', '--user-name', name]); removed.push({ iamUser: name });
     }
-    scheduled = true;
-    await aws(['kms', 'delete-alias', '--alias-name', `alias/${name}`]); removed.push({ alias: `alias/${name}` });
-  }
+    // Deleting the key makes every envelope wrapped by it unrecoverable after the waiting period; it is opt-in.
+    // Schedule first and remove the alias last: if scheduling fails, the alias still leads a rerun to the key.
+    if (deleteKey && key) {
+      const m = key.KeyMetadata;
+      if (m.KeyState === 'PendingDeletion') removed.push({ kmsKeyAlreadyScheduledForDeletion: m.Arn, deletionDate: m.DeletionDate });
+      else {
+        const r = await aws(['kms', 'schedule-key-deletion', '--key-id', m.Arn, '--pending-window-in-days', '7']);
+        removed.push({ kmsKeyScheduledForDeletion: m.Arn, deletionDate: r.DeletionDate });
+      }
+      scheduled = true;
+      await aws(['kms', 'delete-alias', '--alias-name', `alias/${name}`]); removed.push({ alias: `alias/${name}` });
+    }
+  });
   // Report the key's state, not what was asked: true kept, false scheduled for deletion (now or earlier),
   // null not found. "Not found here" must never read as a completed crypto-shred.
   return { removed, absent, keptKey: !deleteKey ? true : scheduled ? false : null, keyScheduledForDeletion: scheduled,

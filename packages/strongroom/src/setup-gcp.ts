@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName, tenantTag, shellQuote } from './setup-common.ts';
+import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName, tenantTag, shellQuote, reportPartial } from './setup-common.ts';
 
 const role = 'roles/cloudkms.cryptoKeyEncrypterDecrypter';
 // IAM permissions the operator needs; roles/cloudkms.admin plus roles/iam.serviceAccountAdmin and serviceAccountKeyAdmin cover them.
@@ -173,26 +173,28 @@ export async function teardownGcp(options: Record<string, string>) {
   // another tenant's key is that tenant's grant.
   const key = await gcloud(['kms', 'keys', 'describe', keyRef, ...ring]).catch(e => { if (notFound(e)) return undefined; throw e; });
   if (key && key.labels?.['strongroom-tenant'] !== tenantTag(tenant)) throw refuse(`CryptoKey ${keyRef}`);
-  // Only gcloud's explicit "binding not found" (or a missing key) means there is nothing to remove; a timeout or
-  // crash must not be reported as an absent grant.
-  const binding = await gcloud(['kms', 'keys', 'remove-iam-policy-binding', keyRef, ...ring, '--member', `serviceAccount:${email}`, '--role', role])
-    .then(() => true, e => { if (notFound(e) || (e instanceof SetupError && e.details.gcpCode === 'BINDING_NOT_FOUND')) return false; throw e; });
-  if (binding) removed.push({ keyBinding: email }); else absent.push('keyBinding');
-  if (!workload) {
-    if (account) {
-      await gcloud(['iam', 'service-accounts', 'delete', email]); removed.push({ serviceAccount: email });
-    } else absent.push('serviceAccount');
-  }
-  // Destroying every version makes all envelopes wrapped by the key unrecoverable. (A destroyed key could then be
-  // deleted, but a deleted CryptoKey name can never be reused, so teardown keeps the key and its name.)
-  if (deleteKey) {
-    const versions = await gcloud(['kms', 'keys', 'versions', 'list', '--key', keyRef, ...ring, '--filter=state=ENABLED OR state=DISABLED']).catch(e => { if (notFound(e)) return undefined; throw e; });
-    if (!versions) absent.push('cryptoKey');
-    for (const v of versions ?? []) {
-      const r = await gcloud(['kms', 'keys', 'versions', 'destroy', v.name.split('/').pop(), '--key', keyRef, ...ring]);
-      removed.push({ cryptoKeyVersionScheduledForDestruction: v.name, destroyTime: r.destroyTime });
+  await reportPartial(removed, async () => {
+    // Only gcloud's explicit "binding not found" (or a missing key) means there is nothing to remove; a timeout or
+    // crash must not be reported as an absent grant.
+    const binding = await gcloud(['kms', 'keys', 'remove-iam-policy-binding', keyRef, ...ring, '--member', `serviceAccount:${email}`, '--role', role])
+      .then(() => true, e => { if (notFound(e) || (e instanceof SetupError && e.details.gcpCode === 'BINDING_NOT_FOUND')) return false; throw e; });
+    if (binding) removed.push({ keyBinding: email }); else absent.push('keyBinding');
+    if (!workload) {
+      if (account) {
+        await gcloud(['iam', 'service-accounts', 'delete', email]); removed.push({ serviceAccount: email });
+      } else absent.push('serviceAccount');
     }
-  }
+    // Destroying every version makes all envelopes wrapped by the key unrecoverable. (A destroyed key could then be
+    // deleted, but a deleted CryptoKey name can never be reused, so teardown keeps the key and its name.)
+    if (deleteKey) {
+      const versions = await gcloud(['kms', 'keys', 'versions', 'list', '--key', keyRef, ...ring, '--filter=state=ENABLED OR state=DISABLED']).catch(e => { if (notFound(e)) return undefined; throw e; });
+      if (!versions) absent.push('cryptoKey');
+      for (const v of versions ?? []) {
+        const r = await gcloud(['kms', 'keys', 'versions', 'destroy', v.name.split('/').pop(), '--key', keyRef, ...ring]);
+        removed.push({ cryptoKeyVersionScheduledForDestruction: v.name, destroyTime: r.destroyTime });
+      }
+    }
+  });
   // Report the key's state, not what was asked: true kept, false no usable version left (destroyed or scheduled,
   // now or earlier), null not found. "Not found here" must never read as a completed crypto-shred.
   const scheduledNow = removed.filter(r => 'cryptoKeyVersionScheduledForDestruction' in r).length;
