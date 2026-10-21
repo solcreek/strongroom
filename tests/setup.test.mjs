@@ -115,7 +115,8 @@ test('setup aws failures carry a stable code, a next step and the resources crea
     } else if (code !== 'AWS_ERROR') assert.ok(e.next);
   }
   assert.equal(JSON.parse((await run(['setup', 'aws', '--tenant', 'a', '--profile', 'nope', '--region', 'us-east-1'], { 'sts get-caller-identity': { stderr: 'The config profile (nope) could not be found' } })).stderr).error.code, 'AWS_PROFILE_NOT_FOUND');
-  for (const args of [['setup', 'aws', '--name', 'sr-test'], ['setup', 'gcp', '--tenant', 'a'], ['setup', 'aws', '--tenant', 'a', '--name', 'bad name'], ['teardown', 'aws', '--tenant', 'a']])
+  // Only the fake aws is on PATH here; gcp input errors are covered against a fake gcloud in setup-gcp.test.mjs.
+  for (const args of [['setup', 'aws', '--name', 'sr-test'], ['setup', 'aws', '--tenant', 'a', '--name', 'bad name'], ['teardown', 'aws', '--tenant', 'a']])
     assert.equal((await run(args, ok)).code, 2, args.join(' '));
 });
 
