@@ -45,6 +45,15 @@ test('SDK sends Uint8Array plaintext as bytes and decryptBytes returns a wipeabl
   for (const chunk of big) assert.ok(chunk.every(b => b === 0));
   await assert.rejects(client.encrypt(undefined), e => e instanceof StrongroomError);
 });
+test('SDK error codes match what the service and client actually emit', async () => {
+  const { serviceErrorCodes, clientErrorCodes } = await import('../packages/strongroom/src/client.ts');
+  const { capabilities } = await import('../service/contract.ts');
+  assert.deepEqual([...serviceErrorCodes].sort(), Object.keys(capabilities.errors).sort());
+  // Every client-side code the SDK source raises is listed, and nothing else.
+  const source = await (await import('node:fs/promises')).readFile('packages/strongroom/src/client.ts', 'utf8');
+  const raised = new Set([...source.matchAll(/new StrongroomError\('([A-Z_]+)'/g)].map(m => m[1]));
+  assert.deepEqual([...raised].sort(), [...clientErrorCodes].sort());
+});
 test('SDK rejects unsafe origins and bad credentials before sending requests', () => {
   for (const url of ['', 'http://remote.example', 'https://name:password@example.com', 'https://example.com/path', 'https://example.com?token=secret']) assert.throws(() => new Strongroom({ ...options, url }), { code: 'INVALID_CONFIG' });
   assert.throws(() => new Strongroom({ ...options, token: 'short' }), { code: 'INVALID_CONFIG' });
