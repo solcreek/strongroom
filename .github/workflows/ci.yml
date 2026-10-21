@@ -101,7 +101,12 @@ jobs:
       - uses: opentofu/setup-opentofu@v2
         with:
           tofu_version: 1.12.6
-      - name: Format and validate
+      - name: Format, validate and test
+        # One command per line: under bash -e, a failure inside an && chain would not stop the loop.
         run: |
           tofu fmt -check -recursive deploy/terraform
-          for m in deploy/terraform/*/; do tofu -chdir="$m" init -backend=false -input=false && tofu -chdir="$m" validate; done
+          for m in deploy/terraform/*/; do
+            tofu -chdir="$m" init -backend=false -input=false
+            tofu -chdir="$m" validate
+            tofu -chdir="$m" test
+          done
