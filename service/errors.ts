@@ -8,6 +8,8 @@ export class ServiceError extends Error {
 }
 // `path` is a JSON path into the request (e.g. $.context.recordId); the rule never echoes the supplied value.
 export const invalid = (path?: string, rule?: string) => Object.assign(new ServiceError('INVALID_REQUEST', 400, rule ? `${path}: ${rule}` : 'Request does not match the API schema.'), path ? { path } : {});
+// `path` names the request field that was refused (absent when the operation itself is not granted).
+export const forbidden = (path: string | undefined, message: string) => Object.assign(new ServiceError('FORBIDDEN', 403, message), path ? { path } : {});
 export const unavailable = () => new ServiceError('KMS_UNAVAILABLE', 503, 'Key service is unavailable.', true);
 export const decryptFailed = () => new ServiceError('DECRYPT_FAILED', 400, 'Envelope could not be decrypted with this context.');
 // The envelope opened; only the requested representation is impossible.
