@@ -86,7 +86,8 @@ test('setup aws writes a valid private config, keeps the secret off stdout, and 
 test('setup aws reuses this tenant\'s existing key and grants a role instead of creating a user', async t => {
   const { dir, run } = await harness(t);
   const scenario = { ...ok, 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn, KeyState: 'Enabled', KeySpec: 'SYMMETRIC_DEFAULT', KeyUsage: 'ENCRYPT_DECRYPT' } } },
-    'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'strongroom-tenant', TagValue: tenantTag('acme') }] } }, 'iam get-role': { stdout: { Role: {} } }, 'iam put-role-policy': { stdout: '' } };
+    'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'strongroom-tenant', TagValue: tenantTag('acme') }] } }, 'iam get-role': { stdout: { Role: {} } },
+    'iam get-role-policy': err('NoSuchEntity', 'GetRolePolicy'), 'iam put-role-policy': { stdout: '' } };
   const r = await run([...base, '--directory', join(dir, 'out'), '--role-name', 'task'], scenario);
   assert.equal(r.code, 0, r.stderr);
   assert.ok(!r.ops.includes('kms create-key') && !r.ops.includes('iam create-user'));
@@ -102,6 +103,13 @@ test('setup aws reuses this tenant\'s existing key and grants a role instead of 
     const foreign = await run([...base, '--directory', join(dir, `f${tags.length}${tags[0]?.TagKey ?? ''}`), '--role-name', 'task'], { ...scenario, 'kms list-resource-tags': { stdout: { Tags: tags } } });
     assert.equal(foreign.code, 2); assert.equal(JSON.parse(foreign.stderr).error.code, 'NOT_OWNED'); assert.ok(!foreign.ops.includes('iam put-role-policy'));
   }
+  // IAM is global, aliases are regional: an existing grant for another key (the same name set up in another
+  // region, say) is never overwritten. Re-running against the same key is fine.
+  const otherKey = arn.replace('us-east-1', 'eu-west-1');
+  const overwrite = await run([...base, '--directory', join(dir, 'ow'), '--role-name', 'task'], { ...scenario, 'iam get-role-policy': { stdout: { PolicyDocument: kmsPolicy(otherKey) } } });
+  assert.equal(overwrite.code, 2); assert.equal(JSON.parse(overwrite.stderr).error.code, 'NOT_OWNED'); assert.ok(!overwrite.ops.includes('iam put-role-policy'));
+  const rerun = await run([...base, '--directory', join(dir, 'rr'), '--role-name', 'task'], { ...scenario, 'iam get-role-policy': { stdout: { PolicyDocument: kmsPolicy(arn) } } });
+  assert.equal(rerun.code, 0, rerun.stderr);
 });
 
 test('setup aws failures carry a stable code, a next step and the resources created so far', async t => {
@@ -109,7 +117,9 @@ test('setup aws failures carry a stable code, a next step and the resources crea
   const cases = [
     [{ ...ok, 'sts get-caller-identity': { stderr: 'Unable to locate credentials. You can configure credentials by running "aws configure".' } }, 'AWS_NOT_AUTHENTICATED', 3],
     [{ ...ok, 'sts get-caller-identity': { stderr: 'Error when retrieving token from sso: Token has expired and refresh failed' } }, 'AWS_NOT_AUTHENTICATED', 3],
-    [{ ...ok, 'iam get-user': { stdout: { User: {} } } }, 'RESOURCE_EXISTS', 2],
+    [{ ...ok, 'iam get-user': { stdout: { User: {} } }, 'iam list-user-tags': { stdout: { Tags: [{ Key: 'strongroom-tenant', Value: tenantTag('acme') }] } } }, 'RESOURCE_EXISTS', 2],
+    // The same name held by another tenant's user is not "yours to tear down": no teardown is suggested.
+    [{ ...ok, 'iam get-user': { stdout: { User: {} } }, 'iam list-user-tags': { stdout: { Tags: [{ Key: 'strongroom-tenant', Value: tenantTag('globex') }] } } }, 'NOT_OWNED', 2],
     [{ ...ok, 'iam create-user': err('AccessDenied', 'CreateUser') }, 'AWS_PERMISSION_DENIED', 3],
     [{ ...ok, 'kms create-alias': err('LimitExceededException', 'CreateAlias') }, 'AWS_ERROR', 1],
   ];
@@ -120,10 +130,16 @@ test('setup aws failures carry a stable code, a next step and the resources crea
     assert.ok(!r.stderr.includes('arn:aws:secret'), 'aws stderr text is never forwarded');
     if (code === 'AWS_PERMISSION_DENIED') {
       assert.deepEqual(e.created, [{ kmsKey: arn }, { alias: 'alias/sr-test' }]);
-      assert.match(e.cleanup, /^strongroom teardown aws --name sr-test --delete-key/);
+      // Every command setup prints is tenant-scoped, so following it can only touch this tenant's resources.
+      assert.match(e.cleanup, /^strongroom teardown aws --tenant acme --name sr-test .*--delete-key$/);
       assert.ok(e.requiredPermissions.user.includes('iam:CreateUser'));
     } else if (code !== 'AWS_ERROR') assert.ok(e.next);
+    if (code === 'RESOURCE_EXISTS') assert.match(e.next, /teardown aws --tenant acme /);
+    if (code === 'NOT_OWNED') assert.doesNotMatch(e.next, /teardown/);
   }
+  // A tenant id that needs quoting is quoted in the printed command.
+  const quoted = await run(['setup', 'aws', '--tenant', "o'brien & co", '--region', 'us-east-1', '--directory', join(dir, 'q'), '--no-verify'], { ...ok, 'iam create-user': err('AccessDenied', 'CreateUser') });
+  assert.match(JSON.parse(quoted.stderr).error.cleanup, /--tenant 'o'\\''brien & co' /);
   assert.equal(JSON.parse((await run(['setup', 'aws', '--tenant', 'a', '--profile', 'nope', '--region', 'us-east-1'], { 'sts get-caller-identity': { stderr: 'The config profile (nope) could not be found' } })).stderr).error.code, 'AWS_PROFILE_NOT_FOUND');
   // Only the fake aws is on PATH here; gcp input errors are covered against a fake gcloud in setup-gcp.test.mjs.
   for (const args of [['setup', 'aws', '--name', 'sr-test'], ['setup', 'aws', '--tenant', 'a', '--name', 'bad name'], ['teardown', 'aws']])
@@ -157,7 +173,7 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
   const present = { 'iam list-user-tags': { stdout: { Tags: [{ Key: 'app', Value: 'strongroom' }, { Key: 'strongroom-tenant', Value: tenantTag('acme') }] } },
     'iam list-access-keys': { stdout: { AccessKeyMetadata: [{ AccessKeyId: 'AKIA1' }, { AccessKeyId: 'AKIA2' }] } }, 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn } } },
     'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'app', TagValue: 'strongroom' }, { TagKey: 'strongroom-tenant', TagValue: tenantTag('acme') }] } }, 'kms schedule-key-deletion': { stdout: { DeletionDate: '2026-10-20' } } };
-  const r = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);
+  const r = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);
   assert.equal(r.code, 0, r.stderr);
   // Every ownership check (user, then key) runs before the first deletion.
   assert.deepEqual(r.ops, ['iam list-user-tags', 'kms describe-key', 'kms list-resource-tags', 'iam list-access-keys', 'iam delete-access-key', 'iam delete-access-key', 'iam delete-user-policy', 'iam delete-user', 'kms delete-alias', 'kms schedule-key-deletion']);
@@ -165,16 +181,20 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
   const mutating = ops => ops.filter(o => /delete|schedule/.test(o));
   const foreignUser = await run(['teardown', 'aws', '--tenant', 'globex', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);
   assert.equal(foreignUser.code, 2); assert.equal(JSON.parse(foreignUser.stderr).error.code, 'NOT_OWNED'); assert.deepEqual(mutating(foreignUser.ops), []);
-  const untagged = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1'], { ...present, 'iam list-user-tags': { stdout: { Tags: [] } } });
+  // setup's app=strongroom tag alone proves nothing about the tenant.
+  const untagged = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1'], { ...present, 'iam list-user-tags': { stdout: { Tags: [{ Key: 'app', Value: 'strongroom' }] } } });
   assert.equal(untagged.code, 2); assert.deepEqual(mutating(untagged.ops), []);
+  // A name alone is never enough: teardown is always tenant-scoped.
+  const nameOnly = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1'], present);
+  assert.equal(nameOnly.code, 2); assert.equal(JSON.parse(nameOnly.stderr).error.path, '--tenant'); assert.deepEqual(nameOnly.ops, []);
   const foreignKey = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'],
     { ...present, 'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'strongroom-tenant', TagValue: tenantTag('globex') }] } } });
   // A foreign key with --delete-key stops the whole teardown: the user is not deleted either.
   assert.equal(foreignKey.code, 2); assert.deepEqual(mutating(foreignKey.ops), []);
   assert.ok(r.calls.find(c => c[1] === 'schedule-key-deletion').includes('7'));
-  const kept = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1'], present);
+  const kept = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1'], present);
   assert.ok(!kept.ops.some(o => o.startsWith('kms')) && JSON.parse(kept.stdout).keptKey);
-  const absent = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': err('NotFoundException', 'DescribeKey') });
+  const absent = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': err('NotFoundException', 'DescribeKey') });
   assert.equal(absent.code, 0); assert.deepEqual(JSON.parse(absent.stdout).absent, ['iamUser', 'kmsKey']);
   // A shared role keeps one policy per deployment; teardown removes this one only if its key is this tenant's.
   const granted = { 'iam get-role-policy': { stdout: { PolicyDocument: kmsPolicy(arn) } }, 'kms list-resource-tags': present['kms list-resource-tags'] };
@@ -195,6 +215,12 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
     const refused = await run(roleArgs(tenant), scenario);
     assert.equal(refused.code, 2, why); assert.equal(JSON.parse(refused.stderr).error.code, 'NOT_OWNED', why); assert.deepEqual(mutating(refused.ops), [], why);
   }
+  // The granted key is looked up in its own region, so a different --region cannot make a live key look gone.
+  const euKey = arn.replace('us-east-1', 'eu-west-1');
+  const crossRegion = await run(roleArgs('acme'), { ...granted, 'iam get-role-policy': { stdout: { PolicyDocument: kmsPolicy(euKey) } } });
+  assert.equal(crossRegion.code, 0, crossRegion.stderr);
+  const lookup = crossRegion.calls.find(c => c[1] === 'list-resource-tags');
+  assert.equal(lookup[lookup.indexOf('--region') + 1], 'eu-west-1');
   // A grant on a key that no longer exists is no one's, so it is removed.
   const keyGone = await run(roleArgs('acme'), { ...granted, 'kms list-resource-tags': err('NotFoundException', 'ListResourceTags') });
   assert.equal(keyGone.code, 0, keyGone.stderr); assert.ok(keyGone.ops.includes('iam delete-role-policy'));

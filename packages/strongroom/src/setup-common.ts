@@ -26,6 +26,8 @@ export function tenantName(tenantId: string): string {
 // before setup reuses or teardown removes one, so a name that points at another tenant's resource is refused
 // rather than shared or destroyed. A hash, because tag and label values cannot hold arbitrary tenant ids.
 export const tenantTag = (tenantId: string) => sha256(tenantId).slice(0, 32);
+// For commands setup prints for an agent or operator to run: the tenant id is arbitrary text.
+export const shellQuote = (s: string) => /^[A-Za-z0-9._@%+=:,/-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 // --name wins; otherwise the name follows --tenant. Teardown accepts either, so an agent can undo a setup
 // knowing only the tenant.
 export function resourceName(options: Record<string, string>, command: string): string {

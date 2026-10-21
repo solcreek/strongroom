@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName, tenantTag } from './setup-common.ts';
+import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName, tenantTag, shellQuote } from './setup-common.ts';
 
 const role = 'roles/cloudkms.cryptoKeyEncrypterDecrypter';
 // IAM permissions the operator needs; roles/cloudkms.admin plus roles/iam.serviceAccountAdmin and serviceAccountKeyAdmin cover them.
@@ -102,7 +102,13 @@ export async function setupGcp(options: Record<string, string>) {
   // A workload account may live in another project (a central key project); then the IAM binding itself validates it.
   const saExists = !workload || email.endsWith(`@${p}.iam.gserviceaccount.com`) ? await accountExists(gcloud, email) : true;
   if (workload && !saExists) throw new SetupError('INVALID_INPUT', `Service account ${workload} does not exist.`, 0, { path: '--service-account' });
-  if (!workload && saExists) throw new SetupError('RESOURCE_EXISTS', `Service account ${email} already exists.`, 0, { next: `Choose another --name, or remove it with: strongroom teardown gcp --name ${name} --project ${p}` });
+  const teardownCommand = `strongroom teardown gcp --tenant ${shellQuote(tenantId)} --name ${name} --project ${p} --location ${location} --keyring ${keyRing} --key ${keyRef}${workload ? ` --service-account ${workload}` : ''}`;
+  if (!workload && saExists) {
+    const [account] = await gcloud(['iam', 'service-accounts', 'list', `--filter=email=${email}`]);
+    if (!String(account?.description ?? '').startsWith(`strongroom-tenant=${tenantTag(tenantId)}`))
+      throw new SetupError('NOT_OWNED', `Service account ${email} already exists and is not this tenant's.`, 0, { next: 'Choose another --name, or omit it to use the name derived from --tenant.' });
+    throw new SetupError('RESOURCE_EXISTS', `Service account ${email} already exists for this tenant.`, 0, { next: `Remove it first with: ${teardownCommand}` });
+  }
   const keyId = `projects/${p}/locations/${location}/keyRings/${keyRing}/cryptoKeys/${keyRef}`;
   const plan = [
     ...(apiEnabled ? [] : [{ action: 'enable-api', api: 'cloudkms.googleapis.com' }]),
@@ -118,7 +124,7 @@ export async function setupGcp(options: Record<string, string>) {
   if (dryRun) return { dryRun: true, ...base, next: 'Run the same command without --dry-run to apply.' };
 
   const created: Record<string, string>[] = [];
-  const cleanup = `strongroom teardown gcp --name ${name} --project ${p} --location ${location} --keyring ${keyRing} --key ${keyRef}${workload ? ` --service-account ${workload}` : ''}${existing ? '' : ' --delete-key'}`;
+  const cleanup = `${teardownCommand}${existing ? '' : ' --delete-key'}`;
   try {
     if (!apiEnabled) { await gcloud(['services', 'enable', 'cloudkms.googleapis.com']); created.push({ enabledApi: 'cloudkms.googleapis.com' }); }
     if (!ringExists) { await gcloud(['kms', 'keyrings', 'create', keyRing, ...loc]); created.push({ keyRing }); }
@@ -150,22 +156,21 @@ export async function setupGcp(options: Record<string, string>) {
 }
 
 export async function teardownGcp(options: Record<string, string>) {
+  // Always tenant-scoped: a name alone cannot prove which tenant a resource belongs to.
+  const tenant = options['--tenant'];
+  if (!tenant) throw new SetupError('INVALID_INPUT', 'teardown gcp requires --tenant TENANT; it removes only resources setup marked for that tenant.', 0, { path: '--tenant' });
   const { name, keyRing, keyRef, location, workload } = inputs(options, 'teardown gcp');
   const p = await project(options), gcloud = cli(p), ring = ['--location', location, '--keyring', keyRing];
   const email = workload ?? `${name}@${p}.iam.gserviceaccount.com`, removed: Record<string, string>[] = [], absent: string[] = [];
-  const deleteKey = options['--delete-key'] === 'true', tenant = options['--tenant'];
-  // Check ownership of everything before changing anything: with --tenant the marker setup wrote must match;
-  // with only --name, the resource must at least be one setup created.
-  const marker = tenant ? `strongroom-tenant=${tenantTag(tenant)}` : 'strongroom-tenant=';
-  const refuse = (what: string) => new SetupError('NOT_OWNED', `${what} was not created by setup${tenant ? ' for this tenant' : ''}; teardown changed nothing.`, 0, { resource: what, next: 'Check --tenant or --name.' });
+  const deleteKey = options['--delete-key'] === 'true';
+  // Check every marker before changing anything, so a refusal leaves everything as it was.
+  const refuse = (what: string) => new SetupError('NOT_OWNED', `${what} is not marked as this tenant's; teardown changed nothing.`, 0, { resource: what, next: 'Check --tenant and --name.' });
   const account = workload ? undefined : (await gcloud(['iam', 'service-accounts', 'list', `--filter=email=${email}`]))[0];
-  // With only --name, an account 0.1.0 created (no description yet, setup's display name) also counts as setup's.
-  const setupAccount = (a: { description?: string; displayName?: string }) => String(a.description ?? '').startsWith(marker) || (!tenant && !a.description && a.displayName === `Strongroom (${name})`);
-  if (account && !setupAccount(account)) throw refuse(`Service account ${email}`);
+  if (account && !String(account.description ?? '').startsWith(`strongroom-tenant=${tenantTag(tenant)}`)) throw refuse(`Service account ${email}`);
   // Checked even without --delete-key: removing a binding also changes the key, and a workload's binding on
   // another tenant's key is that tenant's grant.
   const key = await gcloud(['kms', 'keys', 'describe', keyRef, ...ring]).catch(e => { if (notFound(e)) return undefined; throw e; });
-  if (key && !(tenant ? key.labels?.['strongroom-tenant'] === tenantTag(tenant) : key.labels?.app === 'strongroom')) throw refuse(`CryptoKey ${keyRef}`);
+  if (key && key.labels?.['strongroom-tenant'] !== tenantTag(tenant)) throw refuse(`CryptoKey ${keyRef}`);
   const binding = await gcloud(['kms', 'keys', 'remove-iam-policy-binding', keyRef, ...ring, '--member', `serviceAccount:${email}`, '--role', role])
     .then(() => true, e => { if (notFound(e) || (e instanceof SetupError && e.code === 'GCP_ERROR' && !e.details.gcpCode)) return false; throw e; });
   if (binding) removed.push({ keyBinding: email }); else absent.push('keyBinding');

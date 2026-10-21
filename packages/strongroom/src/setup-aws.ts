@@ -3,13 +3,13 @@
 // stable error codes with a `next` command, `created` resources on partial failure, and an exact inverse.
 import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
-import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName, tenantTag } from './setup-common.ts';
+import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName, tenantTag, shellQuote } from './setup-common.ts';
 export { SetupError } from './setup-common.ts';
 
 // What the operator running setup needs; printed by --dry-run and on AWS_PERMISSION_DENIED.
 export const requiredPermissions = {
-  user: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetUser', 'iam:CreateUser', 'iam:TagUser', 'iam:PutUserPolicy', 'iam:CreateAccessKey'],
-  role: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetRole', 'iam:PutRolePolicy'],
+  user: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetUser', 'iam:ListUserTags', 'iam:CreateUser', 'iam:TagUser', 'iam:PutUserPolicy', 'iam:CreateAccessKey'],
+  role: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetRole', 'iam:GetRolePolicy', 'iam:PutRolePolicy'],
   teardown: ['iam:ListUserTags', 'iam:GetRolePolicy', 'iam:ListAccessKeys', 'iam:DeleteAccessKey', 'iam:DeleteUserPolicy', 'iam:DeleteUser', 'iam:DeleteRolePolicy', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:DeleteAlias', 'kms:ScheduleKeyDeletion'],
 };
 // Same grant as deploy/terraform/aws-ecs-express: the key only, and only with Strongroom's encryption context.
@@ -72,9 +72,19 @@ export async function setupAws(options: Record<string, string>) {
     if (!tags.some(t => t.TagKey === 'strongroom-tenant' && t.TagValue === tenantTag(tenantId)))
       throw new SetupError('NOT_OWNED', `${alias} exists but is not tagged as this tenant's key; setup never reuses another tenant's key.`, 0, { keyArn: m.Arn, next: 'Choose another --name, or omit it to use the name derived from --tenant.' });
   }
-  if (o.role) await aws(['iam', 'get-role', '--role-name', o.role]).catch(e => { throw notFound(e) ? new SetupError('INVALID_INPUT', `IAM role ${o.role} does not exist.`, 0, { path: '--role-name' }) : e; });
-  else if (await aws(['iam', 'get-user', '--user-name', name]).then(() => true, e => { if (notFound(e)) return false; throw e; }))
-    throw new SetupError('RESOURCE_EXISTS', `IAM user ${name} already exists.`, 0, { next: `Choose another --name, or remove it with: strongroom teardown aws --name ${name}` });
+  const teardownCommand = `strongroom teardown aws --tenant ${shellQuote(tenantId)} --name ${name}${o.role ? ` --role-name ${o.role}` : ''} --region ${o.region}${o.profile ? ` --profile ${o.profile}` : ''}`;
+  if (o.role) {
+    await aws(['iam', 'get-role', '--role-name', o.role]).catch(e => { throw notFound(e) ? new SetupError('INVALID_INPUT', `IAM role ${o.role} does not exist.`, 0, { path: '--role-name' }) : e; });
+    // IAM is global while aliases are per region: the same name in another region must not overwrite this grant.
+    const current = await aws(['iam', 'get-role-policy', '--role-name', o.role, '--policy-name', `strongroom-kms-${name}`]).catch(e => { if (notFound(e)) return undefined; throw e; });
+    if (current && !(existing && canonical(current.PolicyDocument) === canonical(kmsPolicy(existing.KeyMetadata.Arn))))
+      throw new SetupError('NOT_OWNED', `Role ${o.role} already has strongroom-kms-${name} for another key; setup never overwrites a grant.`, 0, { next: 'Choose another --name, or remove that deployment first with its own teardown.' });
+  } else if (await aws(['iam', 'get-user', '--user-name', name]).then(() => true, e => { if (notFound(e)) return false; throw e; })) {
+    const tags = (await aws(['iam', 'list-user-tags', '--user-name', name])).Tags ?? [];
+    if (!tags.some((t: { Key: string; Value: string }) => t.Key === 'strongroom-tenant' && t.Value === tenantTag(tenantId)))
+      throw new SetupError('NOT_OWNED', `IAM user ${name} already exists and is not this tenant's.`, 0, { next: 'Choose another --name, or omit it to use the name derived from --tenant.' });
+    throw new SetupError('RESOURCE_EXISTS', `IAM user ${name} already exists for this tenant.`, 0, { next: `Remove it first with: ${teardownCommand}` });
+  }
   const plan = [
     existing ? { action: 'reuse-key', keyArn: existing.KeyMetadata.Arn, alias } : { action: 'create-key', alias, spec: 'SYMMETRIC_DEFAULT', usage: 'ENCRYPT_DECRYPT' },
     o.role ? { action: 'put-role-policy', role: o.role, policy: `strongroom-kms-${name}` } : { action: 'create-iam-user', user: name, policy: 'strongroom-kms', accessKey: 'written to config.json only' },
@@ -85,7 +95,7 @@ export async function setupAws(options: Record<string, string>) {
   if (dryRun) return { dryRun: true, ...base, next: `Run the same command without --dry-run to apply.` };
 
   const created: Record<string, string>[] = [];
-  const cleanup = `strongroom teardown aws --name ${name}${o.role ? ` --role-name ${o.role}` : ''}${existing ? '' : ' --delete-key'} --region ${o.region}${o.profile ? ` --profile ${o.profile}` : ''}`;
+  const cleanup = `${teardownCommand}${existing ? '' : ' --delete-key'}`;
   try {
     const tags = ['--tags', 'TagKey=app,TagValue=strongroom', `TagKey=strongroom-name,TagValue=${name}`, `TagKey=strongroom-tenant,TagValue=${tenantTag(tenantId)}`];
     let keyArn: string = existing?.KeyMetadata.Arn;
@@ -97,8 +107,8 @@ export async function setupAws(options: Record<string, string>) {
     const policy = JSON.stringify(kmsPolicy(keyArn));
     let key: Record<string, unknown>;
     if (o.role) {
-      // One inline policy per deployment, so a role shared by several tenants keeps each grant separate
-      // and setup never overwrites another tenant's.
+      // One inline policy per deployment, so a role shared by several tenants keeps each grant separate;
+      // the preflight above refused an existing policy for any other key.
       await aws(['iam', 'put-role-policy', '--role-name', o.role, '--policy-name', `strongroom-kms-${name}`, '--policy-document', policy]); created.push({ rolePolicy: `${o.role}/strongroom-kms-${name}` });
       key = { provider: 'aws', region: o.region, keyId: keyArn, containerCredentials: true };
     } else {
@@ -120,21 +130,27 @@ export async function setupAws(options: Record<string, string>) {
   }
 }
 export async function teardownAws(options: Record<string, string>) {
+  // Always tenant-scoped: a name alone cannot prove which tenant a resource belongs to.
+  const tenant = options['--tenant'];
+  if (!tenant) throw new SetupError('INVALID_INPUT', 'teardown aws requires --tenant TENANT; it removes only resources setup marked for that tenant.', 0, { path: '--tenant' });
   const name = resourceName(options, 'teardown aws'), role = options['--role-name'];
   const o: Options = { name, region: options['--region'], profile: options['--profile'], role };
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) throw new SetupError('INVALID_INPUT', '--name must match ^[A-Za-z0-9_-]{1,32}$.', 0, { path: '--name' });
   const aws = cli(o), removed: Record<string, string>[] = [], absent: string[] = [];
   const gone = (what: string) => (e: unknown) => { if (notFound(e)) { absent.push(what); return undefined; } throw e; };
-  // Remove only what setup created for this tenant: with --tenant, its ownership tag must match; with only
-  // --name, the resource must at least carry setup's app=strongroom tag. Every check runs before the first
-  // change, so a refusal leaves everything as it was.
-  const tenant = options['--tenant'], deleteKey = options['--delete-key'] === 'true', policyName = `strongroom-kms-${name}`;
+  // Remove only what setup marked for this tenant. Every check runs before the first change, so a refusal
+  // leaves everything as it was.
+  const deleteKey = options['--delete-key'] === 'true', policyName = `strongroom-kms-${name}`;
   const owned = (tags: { key: string; value: string }[], what: string) => {
-    const ok = tenant ? tags.some(t => t.key === 'strongroom-tenant' && t.value === tenantTag(tenant)) : tags.some(t => t.key === 'app' && t.value === 'strongroom');
-    if (!ok) throw new SetupError('NOT_OWNED', `${what} was not created by setup${tenant ? ' for this tenant' : ''}; teardown changed nothing.`, 0, { resource: what, next: 'Check --tenant or --name.' });
+    if (!tags.some(t => t.key === 'strongroom-tenant' && t.value === tenantTag(tenant)))
+      throw new SetupError('NOT_OWNED', `${what} is not marked as this tenant's; teardown changed nothing.`, 0, { resource: what, next: 'Check --tenant and --name.' });
   };
-  const keyTags = async (keyId: string) => ((await aws(['kms', 'list-resource-tags', '--key-id', keyId])).Tags ?? [])
-    .map((t: { TagKey: string; TagValue: string }) => ({ key: t.TagKey, value: t.TagValue }));
+  // Look a key up in its own region (from its ARN or the alias's region), so a wrong --region cannot turn
+  // "not in this region" into "gone".
+  const keyTags = async (keyId: string) => {
+    const region = keyId.startsWith('arn:') ? keyId.split(':')[3] : o.region;
+    return ((await cli({ ...o, region })(['kms', 'list-resource-tags', '--key-id', keyId])).Tags ?? []).map((t: { TagKey: string; TagValue: string }) => ({ key: t.TagKey, value: t.TagValue }));
+  };
   let userTags, rolePolicy, key;
   if (role) {
     // The role is the operator's; teardown may remove only the grant setup wrote on this tenant's key. Fail
