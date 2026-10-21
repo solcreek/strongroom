@@ -188,6 +188,10 @@ export async function teardownAws(options: Record<string, string>) {
       removed.push({ kmsKeyScheduledForDeletion: key.KeyMetadata.Arn, deletionDate: r.DeletionDate });
     }
   }
-  return { removed, absent, keptKey: !deleteKey,
-    note: deleteKey ? 'The KMS key is deleted after 7 days; cancel with aws kms cancel-key-deletion if envelopes still need it.' : 'The KMS key was kept; pass --delete-key to schedule its deletion.' };
+  // Report what happened, not what was asked: "not found here" must never read as a completed crypto-shred.
+  const scheduled = removed.some(r => 'kmsKeyScheduledForDeletion' in r);
+  return { removed, absent, keptKey: !scheduled, keyScheduledForDeletion: scheduled,
+    note: scheduled ? 'Decrypts fail now; the KMS key is deleted after 7 days. Cancel with aws kms cancel-key-deletion if envelopes still need it.'
+      : deleteKey ? `No key found at alias/${name} in ${o.region ?? 'the profile region'}: nothing was scheduled for deletion. If the tenant's key exists, rerun with its --region (and --name if setup used one).`
+      : 'The KMS key was kept; pass --delete-key to schedule its deletion.' };
 }

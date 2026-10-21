@@ -28,6 +28,8 @@ function cli(project?: string): Gcloud {
 // Only gcloud's canonical status code and the command are surfaced; stderr text is never forwarded.
 function gcloudError(args: string[], code: string, stderr: string): SetupError {
   const operation = args.slice(0, 3).join(' ');
+  // gcloud reports a missing IAM binding without a status code; name it so callers need not guess from a codeless error.
+  if (!code && /Policy binding with the specified principal, role, and condition not found/.test(stderr)) code = 'BINDING_NOT_FOUND';
   if (/Reauthentication failed|do not currently have an active account|problem refreshing your current auth tokens|gcloud auth login|UNAUTHENTICATED/.test(stderr + code))
     return new SetupError('GCP_NOT_AUTHENTICATED', 'The gcloud CLI has no valid credentials.', 401, { operation, gcpCode: code || null, next: 'Run `gcloud auth login`, confirm with `gcloud auth print-access-token`, then retry.' });
   if (/iam\.disableServiceAccountKeyCreation|iam\.managed\.disableServiceAccountKeyCreation/.test(stderr))
@@ -171,8 +173,10 @@ export async function teardownGcp(options: Record<string, string>) {
   // another tenant's key is that tenant's grant.
   const key = await gcloud(['kms', 'keys', 'describe', keyRef, ...ring]).catch(e => { if (notFound(e)) return undefined; throw e; });
   if (key && key.labels?.['strongroom-tenant'] !== tenantTag(tenant)) throw refuse(`CryptoKey ${keyRef}`);
+  // Only gcloud's explicit "binding not found" (or a missing key) means there is nothing to remove; a timeout or
+  // crash must not be reported as an absent grant.
   const binding = await gcloud(['kms', 'keys', 'remove-iam-policy-binding', keyRef, ...ring, '--member', `serviceAccount:${email}`, '--role', role])
-    .then(() => true, e => { if (notFound(e) || (e instanceof SetupError && e.code === 'GCP_ERROR' && !e.details.gcpCode)) return false; throw e; });
+    .then(() => true, e => { if (notFound(e) || (e instanceof SetupError && e.details.gcpCode === 'BINDING_NOT_FOUND')) return false; throw e; });
   if (binding) removed.push({ keyBinding: email }); else absent.push('keyBinding');
   if (!workload) {
     if (account) {
@@ -189,6 +193,11 @@ export async function teardownGcp(options: Record<string, string>) {
       removed.push({ cryptoKeyVersionScheduledForDestruction: v.name, destroyTime: r.destroyTime });
     }
   }
-  return { removed, absent, keptKey: !deleteKey,
-    note: deleteKey ? 'Decrypts fail now. Each version becomes unrecoverable at its destroyTime (the key\'s destroy-scheduled duration, 7 days when setup created it); until then gcloud kms keys versions restore undoes it. Key material can take up to 45 more days to leave Google\'s backups.' : 'The CryptoKey was kept; pass --delete-key to schedule destruction of its versions.' };
+  // Report what happened, not what was asked: "not found here" must never read as a completed crypto-shred.
+  const scheduled = removed.some(r => 'cryptoKeyVersionScheduledForDestruction' in r);
+  return { removed, absent, keptKey: !scheduled, versionsScheduledForDestruction: removed.filter(r => 'cryptoKeyVersionScheduledForDestruction' in r).length,
+    note: scheduled ? 'Decrypts fail now. Each version becomes unrecoverable at its destroyTime (the key\'s destroy-scheduled duration, 7 days when setup created it); until then gcloud kms keys versions restore undoes it. Key material can take up to 45 more days to leave Google\'s backups.'
+      : deleteKey && !key ? `No CryptoKey ${keyRef} in key ring ${keyRing} (${location}): nothing was scheduled for destruction. If the tenant's key exists, rerun with its --location, --keyring, --key or --name.`
+      : deleteKey ? 'The CryptoKey has no enabled or disabled versions left: they were already destroyed or scheduled for destruction. Nothing new was scheduled.'
+      : 'The CryptoKey was kept; pass --delete-key to schedule destruction of its versions.' };
 }

@@ -160,6 +160,13 @@ test('teardown gcp removes the grant and account, destroys versions only on requ
   assert.ok(!kept.calls.some(c => c[2] === 'versions') && JSON.parse(kept.stdout).keptKey);
   const absent = await run([...acmeTd, '--delete-key'], { 'kms keys remove-iam-policy-binding': { stderr: 'ERROR: Policy binding with the specified principal, role, and condition not found!\n' }, 'iam service-accounts list': { stdout: [] }, 'kms keys describe': err('NOT_FOUND', 'kms.keys.describe'), 'kms keys versions list': err('NOT_FOUND', 'kms.keys.versions.list') });
   assert.equal(absent.code, 0, absent.stderr); assert.deepEqual(JSON.parse(absent.stdout).absent, ['keyBinding', 'serviceAccount', 'cryptoKey']);
+  // Nothing was destroyed, and the result says so instead of the destruction note.
+  const absentOut = JSON.parse(absent.stdout);
+  assert.equal(absentOut.keptKey, true); assert.equal(absentOut.versionsScheduledForDestruction, 0); assert.match(absentOut.note, /nothing was scheduled/);
+  assert.equal(JSON.parse(r.stdout).versionsScheduledForDestruction, 2);
+  // A codeless gcloud failure (a timeout, a crash) is not "no binding": teardown stops before deleting the account.
+  const broken = await run(acmeTd, { ...present, 'kms keys remove-iam-policy-binding': { stderr: 'ERROR: gcloud crashed (ConnectionError): connection reset\n' } });
+  assert.notEqual(broken.code, 0); assert.ok(!broken.calls.some(c => c[2] === 'delete'));
   // A workload's binding is removed only from a key setup created (for this tenant, with --tenant).
   const workload = await run([...acmeTd, '--service-account', 'run@other.iam.gserviceaccount.com'], { 'kms keys describe': present['kms keys describe'] });
   assert.deepEqual(workload.calls.map(c => c[2]), ['describe', 'remove-iam-policy-binding']);

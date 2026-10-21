@@ -110,6 +110,11 @@ test('setup aws reuses this tenant\'s existing key and grants a role instead of 
   assert.equal(overwrite.code, 2); assert.equal(JSON.parse(overwrite.stderr).error.code, 'NOT_OWNED'); assert.ok(!overwrite.ops.includes('iam put-role-policy'));
   const rerun = await run([...base, '--directory', join(dir, 'rr'), '--role-name', 'task'], { ...scenario, 'iam get-role-policy': { stdout: { PolicyDocument: kmsPolicy(arn) } } });
   assert.equal(rerun.code, 0, rerun.stderr);
+  // The cross-region case itself: no alias here, but the role already grants this name's key elsewhere.
+  const otherRegion = await run([...base, '--directory', join(dir, 'or'), '--role-name', 'task'],
+    { ...scenario, 'kms describe-key': err('NotFoundException', 'DescribeKey'), 'iam get-role-policy': { stdout: { PolicyDocument: kmsPolicy(otherKey) } } });
+  assert.equal(otherRegion.code, 2); assert.equal(JSON.parse(otherRegion.stderr).error.code, 'NOT_OWNED');
+  assert.ok(!otherRegion.ops.includes('iam put-role-policy') && !otherRegion.ops.includes('kms create-key'));
 });
 
 test('setup aws failures carry a stable code, a next step and the resources created so far', async t => {
@@ -196,6 +201,10 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
   assert.ok(!kept.ops.some(o => o.startsWith('kms')) && JSON.parse(kept.stdout).keptKey);
   const absent = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': err('NotFoundException', 'DescribeKey') });
   assert.equal(absent.code, 0); assert.deepEqual(JSON.parse(absent.stdout).absent, ['iamUser', 'kmsKey']);
+  // A key not found in this region was not deleted, and the result must say so rather than report a crypto-shred.
+  const absentOut = JSON.parse(absent.stdout);
+  assert.equal(absentOut.keyScheduledForDeletion, false); assert.equal(absentOut.keptKey, true); assert.match(absentOut.note, /nothing was scheduled/);
+  assert.equal(JSON.parse(r.stdout).keyScheduledForDeletion, true);
   // A shared role keeps one policy per deployment; teardown removes this one only if its key is this tenant's.
   const granted = { 'iam get-role-policy': { stdout: { PolicyDocument: kmsPolicy(arn) } }, 'kms list-resource-tags': present['kms list-resource-tags'] };
   const roleArgs = tenant => ['teardown', 'aws', '--tenant', tenant, '--name', 'sr-test', '--region', 'us-east-1', '--role-name', 'task'];
