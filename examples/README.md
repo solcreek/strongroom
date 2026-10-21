@@ -43,7 +43,7 @@ Strongroom does not replace KMS: AWS KMS, Cloud KMS, Vault or OpenBao still hold
 | Errors | Provider-specific. AWS reports rejected credentials as HTTP 400. | Stable codes with `retryable` and a next action: `DECRYPT_FAILED` (never overwrite the record), `KMS_ACCESS_DENIED` and `KMS_KEY_UNAVAILABLE` (operator), `KMS_UNAVAILABLE` (retry). |
 | Local development and tests | A cloud account, an emulator, or mocks that drift from the real API. | The local provider behind the same API, as in these examples. Real-KMS behaviour is pinned by recorded fixtures. |
 | Provisioning | Key, key policy or IAM binding, identity and configuration, written by hand or in Terraform. | `strongroom setup aws\|gcp --tenant T`: one command with a dry-run plan and a live check. Terraform modules for Cloud Run and ECS. |
-| Agents and scripts | SDK code. | A JSON CLI with schemas, exit codes and no prompts. Secrets stay off arguments, and off stdout when you decrypt with `--plaintext-file` or `--output` (a plain `decrypt` prints the plaintext). |
+| Agents and scripts | SDK code. | A JSON CLI with schemas, exit codes and no prompts. Secrets stay off arguments. `decrypt` writes them to a new private file (`--output` or `--plaintext-file`) and prints them to stdout only with an explicit `--reveal`. |
 
 ### What it costs, and when to call KMS yourself
 
