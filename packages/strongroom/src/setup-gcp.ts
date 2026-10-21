@@ -200,6 +200,6 @@ export async function teardownGcp(options: Record<string, string>) {
   const scheduledNow = removed.filter(r => 'cryptoKeyVersionScheduledForDestruction' in r).length;
   return { removed, absent, keptKey: !deleteKey ? true : key ? false : null, versionsScheduledForDestruction: scheduledNow,
     note: deleteKey && !key ? `No CryptoKey ${keyRef} in key ring ${keyRing} (${location}), so nothing was scheduled. If the tenant's key exists, rerun with its --location, --keyring, --key or --name.`
-      : deleteKey ? `${scheduledNow ? `Scheduled ${scheduledNow} version(s) for destruction; d` : 'Every version was already destroyed or scheduled for destruction by an earlier teardown; d'}ecrypts fail now. Each version becomes unrecoverable at its destroyTime (the key's destroy-scheduled duration, 7 days when setup created it); until then gcloud kms keys versions restore undoes it. Key material can take up to 45 more days to leave Google's backups.`
+      : deleteKey ? `${scheduledNow ? `Scheduled ${scheduledNow} version(s) for destruction; d` : 'Every version was already destroyed or scheduled for destruction by an earlier teardown; d'}ecrypts fail now. Each version becomes unrecoverable at its destroyTime (set by the destroy-scheduled duration fixed when the key was created); until then gcloud kms keys versions restore undoes it. Key material can take up to 45 more days to leave Google's backups.`
       : 'The CryptoKey was kept; pass --delete-key to schedule destruction of its versions.' };
 }

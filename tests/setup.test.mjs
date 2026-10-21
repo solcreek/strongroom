@@ -115,6 +115,11 @@ test('setup aws reuses this tenant\'s existing key and grants a role instead of 
     { ...scenario, 'kms describe-key': err('NotFoundException', 'DescribeKey'), 'iam get-role-policy': { stdout: { PolicyDocument: kmsPolicy(otherKey) } } });
   assert.equal(otherRegion.code, 2); assert.equal(JSON.parse(otherRegion.stderr).error.code, 'NOT_OWNED');
   assert.ok(!otherRegion.ops.includes('iam put-role-policy') && !otherRegion.ops.includes('kms create-key'));
+  // One deployment, one identity: a role already serving another tenant's deployment is refused before any change.
+  const shared = await run(['setup', 'aws', '--tenant', 'globex', '--region', 'us-east-1', '--directory', join(dir, 'globex'), '--role-name', 'task'],
+    { ...ok, 'iam get-role': { stdout: { Role: {} } }, 'iam get-role-policy': err('NoSuchEntity', 'GetRolePolicy'), 'iam list-role-policies': { stdout: { PolicyNames: [`strongroom-kms-${tenantName('acme')}`] } } });
+  assert.equal(shared.code, 2); assert.equal(JSON.parse(shared.stderr).error.code, 'NOT_OWNED');
+  assert.ok(!shared.ops.some(o => /create|put-role-policy/.test(o)));
 });
 
 test('setup aws failures carry a stable code, a next step and the resources created so far', async t => {

@@ -9,7 +9,7 @@ export { SetupError } from './setup-common.ts';
 // What the operator running setup needs; printed by --dry-run and on AWS_PERMISSION_DENIED.
 export const requiredPermissions = {
   user: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetUser', 'iam:ListUserTags', 'iam:CreateUser', 'iam:TagUser', 'iam:PutUserPolicy', 'iam:CreateAccessKey'],
-  role: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetRole', 'iam:GetRolePolicy', 'iam:PutRolePolicy'],
+  role: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetRole', 'iam:GetRolePolicy', 'iam:ListRolePolicies', 'iam:PutRolePolicy'],
   teardown: ['iam:ListUserTags', 'iam:GetRolePolicy', 'iam:ListAccessKeys', 'iam:DeleteAccessKey', 'iam:DeleteUserPolicy', 'iam:DeleteUser', 'iam:DeleteRolePolicy', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:DeleteAlias', 'kms:ScheduleKeyDeletion'],
 };
 // Same grant as deploy/terraform/aws-ecs-express: the key only, and only with Strongroom's encryption context.
@@ -79,6 +79,10 @@ export async function setupAws(options: Record<string, string>) {
     const current = await aws(['iam', 'get-role-policy', '--role-name', o.role, '--policy-name', `strongroom-kms-${name}`]).catch(e => { if (notFound(e)) return undefined; throw e; });
     if (current && !(existing && canonical(current.PolicyDocument) === canonical(kmsPolicy(existing.KeyMetadata.Arn))))
       throw new SetupError('NOT_OWNED', `Role ${o.role} already has strongroom-kms-${name} for another key; setup never overwrites a grant.`, 0, { next: 'Choose another --name, or remove that deployment first with its own teardown.' });
+    // One deployment, one KMS identity: a role that already grants another deployment's key would let one
+    // compromised credential reach two tenants.
+    const others = ((await aws(['iam', 'list-role-policies', '--role-name', o.role])).PolicyNames ?? []).filter((p: string) => p.startsWith('strongroom-kms') && p !== `strongroom-kms-${name}`);
+    if (others.length) throw new SetupError('NOT_OWNED', `Role ${o.role} already serves another Strongroom deployment (${others.join(', ')}); each tenant needs its own role.`, 0, { next: 'Create a role for this tenant\'s deployment and pass it with --role-name.' });
   } else if (await aws(['iam', 'get-user', '--user-name', name]).then(() => true, e => { if (notFound(e)) return false; throw e; })) {
     const tags = (await aws(['iam', 'list-user-tags', '--user-name', name])).Tags ?? [];
     if (!tags.some((t: { Key: string; Value: string }) => t.Key === 'strongroom-tenant' && t.Value === tenantTag(tenantId)))
@@ -199,7 +203,7 @@ export async function teardownAws(options: Record<string, string>) {
   // Report the key's state, not what was asked: true kept, false scheduled for deletion (now or earlier),
   // null not found. "Not found here" must never read as a completed crypto-shred.
   return { removed, absent, keptKey: !deleteKey ? true : scheduled ? false : null, keyScheduledForDeletion: scheduled,
-    note: scheduled ? 'Decrypts fail now; the KMS key is deleted at deletionDate (7 days after it was scheduled). Cancel with aws kms cancel-key-deletion if envelopes still need it.'
+    note: scheduled ? 'Decrypts fail now; the KMS key is deleted at the deletionDate in removed (whatever waiting period it was scheduled with). Until then, aws kms cancel-key-deletion undoes it.'
       : deleteKey ? `No key found at alias/${name} in ${o.region ?? 'the profile region'}, so nothing was scheduled now. An earlier teardown may already have scheduled the key and removed its alias, or the key is in another --region or under another --name. Find it by its strongroom-tenant tag (${tenantTag(tenant)}) with aws kms list-keys and aws kms list-resource-tags.`
       : 'The KMS key was kept; pass --delete-key to schedule its deletion.' };
 }
