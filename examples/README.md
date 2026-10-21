@@ -19,7 +19,14 @@ Each run prints one JSON line per step and exits non-zero if any property it dem
 | [tenant-data-keys](tenant-data-keys/) | A tenant's 32-byte data encryption key | Bulk data encrypted locally; the key wrapped by the tenant's own deployment; binary plaintext you can wipe; DEK rotation; destroying one tenant's data, including snapshots |
 | [agent-tools](agent-tools/) | A credential an AI agent's tools use | Credential handles instead of secrets in the model's context; redacting tool output; record-level authorization in the tool runtime |
 
-To run an example against a real deployment, provision one per tenant with `strongroom setup aws --tenant T` or `strongroom setup gcp --tenant T`. Then replace `startDeployment()` with that deployment's URL and tokens.
+To run an example against real deployments, provision and deploy one per tenant. Give each its own `--name` and `--directory`, because setup's names do not yet derive from the tenant:
+
+```sh
+strongroom setup aws --tenant acme   --name sr-acme   --directory .strongroom/acme
+strongroom setup aws --tenant globex --name sr-globex --directory .strongroom/globex
+```
+
+Deploy each directory's `config.json` as its own service. Keep each `--name` for the matching `teardown`. Then replace `startDeployment()` with each deployment's URL and tokens.
 
 ## Strongroom or your cloud's KMS directly?
 
@@ -36,7 +43,7 @@ Strongroom does not replace KMS: AWS KMS, Cloud KMS, Vault or OpenBao still hold
 | Errors | Provider-specific. AWS reports rejected credentials as HTTP 400. | Stable codes with `retryable` and a next action: `DECRYPT_FAILED` (never overwrite the record), `KMS_ACCESS_DENIED` and `KMS_KEY_UNAVAILABLE` (operator), `KMS_UNAVAILABLE` (retry). |
 | Local development and tests | A cloud account, an emulator, or mocks that drift from the real API. | The local provider behind the same API, as in these examples. Real-KMS behaviour is pinned by recorded fixtures. |
 | Provisioning | Key, key policy or IAM binding, identity and configuration, written by hand or in Terraform. | `strongroom setup aws\|gcp --tenant T`: one command with a dry-run plan and a live check. Terraform modules for Cloud Run and ECS. |
-| Agents and scripts | SDK code. | A JSON CLI with schemas, exit codes, no prompts, and secrets kept off arguments and stdout. |
+| Agents and scripts | SDK code. | A JSON CLI with schemas, exit codes and no prompts. Secrets stay off arguments, and off stdout when you decrypt with `--plaintext-file` or `--output` (a plain `decrypt` prints the plaintext). |
 
 ### What it costs, and when to call KMS yourself
 
