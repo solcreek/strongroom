@@ -37,6 +37,11 @@ test('SDK sends Uint8Array plaintext as bytes and decryptBytes returns a wipeabl
   const broken = new Strongroom({ ...options, fetch: async () => new Response(new ReadableStream({ start(c) { c.enqueue(partial); }, pull(c) { c.error(new Error('reset')); } }), { headers: { 'content-type': 'application/octet-stream' } }) });
   await assert.rejects(broken.decryptBytes({ envelope, context }), { code: 'NETWORK_ERROR' });
   assert.deepEqual(partial, new Uint8Array(3));
+  // An over-limit body wipes every chunk, including the one that crossed the limit.
+  const big = [new Uint8Array(300000).fill(7), new Uint8Array(300000).fill(7)];
+  const oversized = new Strongroom({ ...options, fetch: async () => new Response(new ReadableStream({ start(c) { for (const chunk of big) c.enqueue(chunk); c.close(); } }), { headers: { 'content-type': 'application/octet-stream' } }) });
+  await assert.rejects(oversized.decryptBytes({ envelope, context }), { code: 'INVALID_RESPONSE' });
+  for (const chunk of big) assert.ok(chunk.every(b => b === 0));
   await assert.rejects(client.encrypt(undefined), e => e instanceof StrongroomError);
 });
 test('SDK rejects unsafe origins and bad credentials before sending requests', () => {

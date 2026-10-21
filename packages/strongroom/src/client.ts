@@ -56,7 +56,7 @@ export class Strongroom {
         while (true) {
           const { done, value } = await reader.read(); if (done) break;
           size += value.length;
-          if (size > 524288) { void reader.cancel().catch(() => {}); throw new StrongroomError('INVALID_RESPONSE', 'Service response exceeded the size limit.', response.status); }
+          if (size > 524288) { value.fill(0); void reader.cancel().catch(() => {}); throw new StrongroomError('INVALID_RESPONSE', 'Service response exceeded the size limit.', response.status); }
           chunks.push(value);
         }
       } catch (e) { for (const chunk of chunks) chunk.fill(0); throw e; }
