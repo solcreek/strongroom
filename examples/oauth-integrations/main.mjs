@@ -25,12 +25,20 @@ const idp = (() => {
   };
 })();
 
-// Stand-in database row with a version column for compare-and-set.
-const db = new Map();
-const update = (id, version, patch) => {
-  const row = db.get(id); if (row.version !== version) return false;
-  db.set(id, { ...row, ...patch, version: version + 1 }); return true;
+// Stand-in database. Every write goes through compare-and-set on a version that only ever increases,
+// reconnects included: a version reused after a reset would let a stalled worker's stale write land.
+const rows = new Map();
+const db = {
+  get: id => rows.get(id),
+  insert(id, row) { if (rows.has(id)) return false; rows.set(id, { ...row, version: 0 }); return true; },
+  update(id, version, patch) {
+    const row = rows.get(id); if (!row || row.version !== version) return false;
+    rows.set(id, { ...row, ...patch, version: version + 1 }); return true;
+  },
 };
+const update = db.update;
+// Test harness edits (expiring a token, aging a lease) also go through compare-and-set.
+const edit = (id, patch) => assert.ok(update(id, db.get(id).version, patch));
 
 const acme = await startDeployment('acme');
 try {
@@ -40,11 +48,15 @@ try {
   // Different purposes, so an access-token envelope can never be passed off as a refresh token.
   const context = (id, purpose) => ({ tenantId: 'acme', recordId: `connection/${id}`, purpose });
 
+  // A first connection inserts the row; a reconnect replaces it through compare-and-set, never by
+  // resetting it, so its version keeps increasing past any version a stalled worker still holds.
   async function connect(id) {
     const t = idp.authorize();
-    db.set(id, { version: 0, status: 'active', leaseUntil: 0, expiresAt: Date.now() + t.expiresIn * 1000,
+    const fresh = { status: 'active', leaseUntil: 0, expiresAt: Date.now() + t.expiresIn * 1000,
       access: await callback.encrypt({ key: 'primary', context: context(id, 'oauth-access-token'), plaintext: t.access }),
-      refresh: await callback.encrypt({ key: 'primary', context: context(id, 'oauth-refresh-token'), plaintext: t.refresh }) });
+      refresh: await callback.encrypt({ key: 'primary', context: context(id, 'oauth-refresh-token'), plaintext: t.refresh }) };
+    // Read the version only after encrypting, then write in one step.
+    while (!db.insert(id, fresh) && !update(id, db.get(id).version, fresh)) { /* lost a race: re-read */ }
   }
 
   // Exactly one worker refreshes: it takes a lease with compare-and-set; the others wait for the new
@@ -86,7 +98,7 @@ try {
   await connect('c1');
   step('connected', { envelopes: ['access', 'refresh'], plaintextInRow: /"(at|rt)-/.test(JSON.stringify(db.get('c1'))) });
 
-  db.set('c1', { ...db.get('c1'), expiresAt: Date.now() }); // the access token has expired
+  edit('c1', { expiresAt: Date.now() }); // the access token has expired
   const results = await Promise.all(['w1', 'w2', 'w3'].map(w => accessToken('c1', w)));
   assert.equal(new Set(results.map(r => r.token)).size, 1);
   step('concurrent-refresh', { workers: results.length, refreshes: results.filter(r => r.refreshed).length, sameToken: true });
@@ -105,16 +117,29 @@ try {
   const crashed = db.get('c3');
   assert.ok(update('c3', crashed.version, { leaseUntil: Date.now() + 30_000, expiresAt: Date.now() }));
   await idp.refresh(await refresher.decrypt({ envelope: crashed.refresh, context: context('c3', 'oauth-refresh-token') }));
-  db.set('c3', { ...db.get('c3'), leaseUntil: Date.now() - 1 }); // the lease has expired
+  edit('c3', { leaseUntil: Date.now() - 1 }); // the lease has expired
   const calls = idp.calls();
   const recovered = await accessToken('c3', 'w4');
   assert.deepEqual([recovered.reconnect, idp.calls(), db.get('c3').status], [true, calls, 'reconnect-required']);
   step('lost-lease', { outcome: 'reconnect-required', providerCalled: false });
 
+  // The "crashed" worker was only stalled. The customer reconnects and a new worker refreshes; then the
+  // stalled worker resumes and tries to write with the version its lease gave it. It must be refused.
+  const stalledVersion = crashed.version + 1;
+  await connect('c3');
+  // The invariant that makes this safe: a reconnect never brings the version back to one a worker holds.
+  assert.ok(db.get('c3').version > stalledVersion);
+  edit('c3', { expiresAt: Date.now() });
+  assert.ok((await accessToken('c3', 'w5')).refreshed);
+  const current = db.get('c3');
+  assert.equal(update('c3', stalledVersion, { access: crashed.access, refresh: crashed.refresh, leaseUntil: 0 }), false);
+  assert.deepEqual(db.get('c3'), current);
+  step('stalled-writer-after-reconnect', { staleWriteRejected: true });
+
   // A failure before the provider call consumed nothing, so it must not cost a reconnect: the lease is
   // released and the next attempt refreshes normally. Here Strongroom is briefly unreachable.
   await connect('c4');
-  db.set('c4', { ...db.get('c4'), expiresAt: Date.now() });
+  edit('c4', { expiresAt: Date.now() });
   const decrypt = refresher.decrypt;
   refresher.decrypt = async () => { throw Object.assign(new Error('Unable to reach Strongroom.'), { code: 'NETWORK_ERROR', retryable: true }); };
   await assert.rejects(accessToken('c4', 'w5'), { code: 'NETWORK_ERROR' });
