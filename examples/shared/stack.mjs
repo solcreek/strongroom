@@ -26,11 +26,15 @@ export async function startDeployment(tenantId, { kek = random() } = {}) {
     { tokenSha256: sha256(tokens.both), permissions: ['encrypt', 'decrypt'], keys: ['primary'] },
   ] };
   const port = await freePort();
+  // Pin HOST as well as PORT: an inherited HOST would bind elsewhere while the probe below waits on 127.0.0.1.
   const child = spawn(process.execPath, [server], { stdio: 'ignore',
-    env: { ...process.env, STRONGROOM_CONFIG: JSON.stringify(config), STRONGROOM_ALLOW_LOCAL: 'true', PORT: String(port) } });
+    env: { ...process.env, STRONGROOM_CONFIG: JSON.stringify(config), STRONGROOM_ALLOW_LOCAL: 'true', HOST: '127.0.0.1', PORT: String(port) } });
   const url = `http://127.0.0.1:${port}`;
   for (let attempt = 0; ; attempt++) {
-    if (child.exitCode !== null || attempt > 200) throw new Error('Strongroom did not start. Run `npm run build` first.');
+    if (child.exitCode !== null || attempt > 200) {
+      if (child.exitCode === null) { child.kill('SIGTERM'); await once(child, 'close'); }
+      throw new Error('Strongroom did not start. Run `npm run build` first.');
+    }
     try { if ((await fetch(`${url}/readyz`)).ok) break; } catch { /* starting */ }
     await new Promise(r => setTimeout(r, 25));
   }
