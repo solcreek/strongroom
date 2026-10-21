@@ -12,6 +12,24 @@ export class SetupError extends StrongroomError {
   constructor(code: string, message: string, status: number, details: Record<string, unknown> = {}) { super(code, message, status); this.details = details; }
   toJSON() { return { ...super.toJSON(), ...this.details }; }
 }
+// Default cloud resource names follow the tenant, so several tenants' deployments can share an account or
+// project without --name. The result fits both AWS (KMS alias, IAM user) and GCP (key ring, service account:
+// ^[a-z][a-z0-9-]{4,28}[a-z0-9]$). A tenant that is not already such a name gets a hash suffix, so "Acme"
+// and "acme" cannot collide; setup still refuses an existing identity if two names ever met.
+export function tenantName(tenantId: string): string {
+  const slug = tenantId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const plain = `sr-${slug}`;
+  if (slug === tenantId && /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(plain)) return plain;
+  const head = slug.slice(0, 20).replace(/-+$/, '');
+  return `sr-${head}${head ? '-' : ''}${createHash('sha256').update(tenantId).digest('hex').slice(0, 6)}`;
+}
+// --name wins; otherwise the name follows --tenant. Teardown accepts either, so an agent can undo a setup
+// knowing only the tenant.
+export function resourceName(options: Record<string, string>, command: string): string {
+  if (options['--name']) return options['--name'];
+  if (options['--tenant']) return tenantName(options['--tenant']);
+  throw new SetupError('INVALID_INPUT', `${command} needs --tenant TENANT (resource names follow it) or an explicit --name.`, 0, { path: '--tenant' });
+}
 export async function assertNewDirectory(directory: string) {
   if (await stat(directory).then(() => true, () => false)) throw new SetupError('INVALID_INPUT', 'The output directory already exists; secrets are never overwritten.', 0, { path: '--directory', next: 'Choose a new --directory.' });
 }

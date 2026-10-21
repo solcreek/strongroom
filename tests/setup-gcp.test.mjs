@@ -142,3 +142,29 @@ test('teardown gcp removes the grant and account, destroys versions only on requ
   const workload = await run([...td, '--service-account', 'run@other.iam.gserviceaccount.com'], {});
   assert.deepEqual(workload.calls.map(c => c[2]), ['remove-iam-policy-binding']);
 });
+test('setup gcp names resources after the tenant and fixes the destroy-scheduled duration at creation', async t => {
+  const { dir, run } = await harness(t);
+  // No --name or --keyring: both follow the tenant, so a second tenant in the same project does not collide.
+  const r = await run(['setup', 'gcp', '--tenant', 'acme', '--project', 'demo-project', '--directory', join(dir, 'acme'), '--no-verify'], ok);
+  assert.equal(r.code, 0, r.stderr);
+  const created = r.calls.find(c => c[0] === 'kms' && c[1] === 'keys' && c[2] === 'create');
+  assert.equal(created[created.indexOf('--keyring') + 1], 'sr-acme');
+  assert.equal(created[created.indexOf('--destroy-scheduled-duration') + 1], '7d');
+  assert.ok(r.calls.some(c => c[1] === 'service-accounts' && c[2] === 'create' && c[3] === 'sr-acme'));
+  assert.equal(JSON.parse(r.stdout).identity.serviceAccount, 'sr-acme@demo-project.iam.gserviceaccount.com');
+  const custom = await run([...base, '--directory', join(dir, 'custom'), '--no-verify', '--destroy-scheduled-duration', '30d'], ok);
+  const createdCustom = custom.calls.find(c => c[0] === 'kms' && c[1] === 'keys' && c[2] === 'create');
+  assert.equal(createdCustom[createdCustom.indexOf('--destroy-scheduled-duration') + 1], '30d');
+  // Cloud KMS accepts 24 hours to 120 days; anything else is refused before gcloud is called.
+  for (const value of ['23h', '121d', '7', '1w', '-1d']) {
+    const bad = await run([...base, '--directory', join(dir, `bad${value}`), '--destroy-scheduled-duration', value], ok);
+    assert.equal(bad.code, 2, value); assert.equal(JSON.parse(bad.stderr).error.path, '--destroy-scheduled-duration'); assert.deepEqual(bad.calls, []);
+  }
+  // Teardown finds the same resources from the tenant alone, and needs one of --tenant or --name.
+  const td = await run(['teardown', 'gcp', '--tenant', 'acme', '--project', 'demo-project'], { 'iam service-accounts list': { stdout: [] } });
+  assert.equal(td.code, 0, td.stderr);
+  const unbound = td.calls.find(c => c[2] === 'remove-iam-policy-binding');
+  assert.equal(unbound[unbound.indexOf('--keyring') + 1], 'sr-acme'); assert.ok(unbound.includes('serviceAccount:sr-acme@demo-project.iam.gserviceaccount.com'));
+  const neither = await run(['teardown', 'gcp', '--project', 'demo-project'], ok);
+  assert.equal(neither.code, 2); assert.equal(JSON.parse(neither.stderr).error.path, '--tenant');
+});

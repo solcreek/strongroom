@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey } from './setup-common.ts';
+import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName } from './setup-common.ts';
 
 const role = 'roles/cloudkms.cryptoKeyEncrypterDecrypter';
 // IAM permissions the operator needs; roles/cloudkms.admin plus roles/iam.serviceAccountAdmin and serviceAccountKeyAdmin cover them.
@@ -56,8 +56,8 @@ const propagationDelayMs = Number(process.env.STRONGROOM_SETUP_RETRY_MS ?? 3000)
 const accountExists = async (gcloud: Gcloud, email: string) => (await gcloud(['iam', 'service-accounts', 'list', `--filter=email=${email}`])).length > 0;
 const raw = (args: string[]) => new Promise<string>(r => execFile('gcloud', args, (e, out) => r(e ? '' : out.trim())));
 
-function inputs(options: Record<string, string>) {
-  const name = options['--name'] ?? 'strongroom';
+function inputs(options: Record<string, string>, command: string) {
+  const name = resourceName(options, command);
   if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(name)) throw new SetupError('INVALID_INPUT', '--name must be 6-30 lowercase letters, digits or hyphens, starting with a letter; it names the key ring and the service account.', 0, { path: '--name' });
   const keyRing = options['--keyring'] ?? name, keyRef = options['--key'] ?? 'primary', location = options['--location'] ?? 'global';
   if (!/^[A-Za-z0-9_-]{1,63}$/.test(keyRing)) throw new SetupError('INVALID_INPUT', '--keyring must match ^[A-Za-z0-9_-]{1,63}$.', 0, { path: '--keyring' });
@@ -74,10 +74,16 @@ async function project(options: Record<string, string>) {
 }
 
 export async function setupGcp(options: Record<string, string>) {
-  const { name, keyRing, keyRef, location, workload } = inputs(options);
   const tenantId = options['--tenant'], protection = options['--protection-level'] ?? 'software';
   if (!tenantId) throw new SetupError('INVALID_INPUT', 'setup gcp requires --tenant TENANT: the one tenant the new deployment serves.', 0, { path: '--tenant' });
+  const { name, keyRing, keyRef, location, workload } = inputs(options, 'setup gcp');
   if (!['software', 'hsm'].includes(protection)) throw new SetupError('INVALID_INPUT', '--protection-level must be software or hsm.', 0, { path: '--protection-level' });
+  // Settable only when the key is created, so choose it explicitly: how long a destroyed key stays restorable.
+  // 7 days matches the shortest AWS deletion window; Cloud KMS allows 24 hours to 120 days.
+  const destroyAfter = options['--destroy-scheduled-duration'] ?? '7d';
+  const units: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 }, match = /^(\d+)([smhd])$/.exec(destroyAfter);
+  const seconds = match ? Number(match[1]) * units[match[2]] : NaN;
+  if (!(seconds >= 86400 && seconds <= 120 * 86400)) throw new SetupError('INVALID_INPUT', '--destroy-scheduled-duration must be INTEGER[s|m|h|d] between 24h and 120d, e.g. 7d.', 0, { path: '--destroy-scheduled-duration' });
   const directory = resolve(options['--directory'] ?? `.strongroom/gcp-${name}`), dryRun = options['--dry-run'] === 'true', skipVerify = options['--no-verify'] === 'true';
   await assertNewDirectory(directory);
   const p = await project(options), gcloud = cli(p);
@@ -98,7 +104,8 @@ export async function setupGcp(options: Record<string, string>) {
   const plan = [
     ...(apiEnabled ? [] : [{ action: 'enable-api', api: 'cloudkms.googleapis.com' }]),
     ringExists ? { action: 'reuse-keyring', keyRing } : { action: 'create-keyring', keyRing, location, note: 'Key rings cannot be deleted.' },
-    existing ? { action: 'reuse-key', keyId } : { action: 'create-key', keyId, purpose: 'ENCRYPT_DECRYPT', protectionLevel: protection.toUpperCase() },
+    existing ? { action: 'reuse-key', keyId, note: 'Its destroy-scheduled duration was fixed when it was created.' }
+      : { action: 'create-key', keyId, purpose: 'ENCRYPT_DECRYPT', protectionLevel: protection.toUpperCase(), destroyScheduledDuration: destroyAfter },
     workload ? { action: 'grant', member: `serviceAccount:${email}`, role, on: keyId } : { action: 'create-service-account', email },
     ...(workload ? [] : [{ action: 'grant', member: `serviceAccount:${email}`, role, on: keyId }, { action: 'create-service-account-key', note: 'written to config.json only' }]),
     { action: 'write-files', directory, files: ['config.json', 'token'] },
@@ -112,7 +119,7 @@ export async function setupGcp(options: Record<string, string>) {
   try {
     if (!apiEnabled) { await gcloud(['services', 'enable', 'cloudkms.googleapis.com']); created.push({ enabledApi: 'cloudkms.googleapis.com' }); }
     if (!ringExists) { await gcloud(['kms', 'keyrings', 'create', keyRing, ...loc]); created.push({ keyRing }); }
-    if (!existing) { await gcloud(['kms', 'keys', 'create', keyRef, ...ring, '--purpose', 'encryption', '--protection-level', protection, '--labels', 'app=strongroom']); created.push({ cryptoKey: keyId }); }
+    if (!existing) { await gcloud(['kms', 'keys', 'create', keyRef, ...ring, '--purpose', 'encryption', '--protection-level', protection, '--destroy-scheduled-duration', destroyAfter, '--labels', 'app=strongroom']); created.push({ cryptoKey: keyId }); }
     if (!workload) { await gcloud(['iam', 'service-accounts', 'create', name, '--display-name', `Strongroom (${name})`]); created.push({ serviceAccount: email }); }
     await propagated(() => gcloud(['kms', 'keys', 'add-iam-policy-binding', keyRef, ...ring, '--member', `serviceAccount:${email}`, '--role', role])); created.push({ keyBinding: email });
     let key: Record<string, unknown> = { provider: 'gcp', keyId, metadataServer: true };
@@ -139,7 +146,7 @@ export async function setupGcp(options: Record<string, string>) {
 }
 
 export async function teardownGcp(options: Record<string, string>) {
-  const { name, keyRing, keyRef, location, workload } = inputs(options);
+  const { name, keyRing, keyRef, location, workload } = inputs(options, 'teardown gcp');
   const p = await project(options), gcloud = cli(p), ring = ['--location', location, '--keyring', keyRing];
   const email = workload ?? `${name}@${p}.iam.gserviceaccount.com`, removed: Record<string, string>[] = [], absent: string[] = [];
   const binding = await gcloud(['kms', 'keys', 'remove-iam-policy-binding', keyRef, ...ring, '--member', `serviceAccount:${email}`, '--role', role])
@@ -150,7 +157,8 @@ export async function teardownGcp(options: Record<string, string>) {
       await gcloud(['iam', 'service-accounts', 'delete', email]); removed.push({ serviceAccount: email });
     } else absent.push('serviceAccount');
   }
-  // Cloud KMS keys and key rings cannot be deleted; destroying every version makes all envelopes wrapped by the key unrecoverable.
+  // Destroying every version makes all envelopes wrapped by the key unrecoverable. (A destroyed key could then be
+  // deleted, but a deleted CryptoKey name can never be reused, so teardown keeps the key and its name.)
   if (options['--delete-key'] === 'true') {
     const versions = await gcloud(['kms', 'keys', 'versions', 'list', '--key', keyRef, ...ring, '--filter=state=ENABLED OR state=DISABLED']).catch(e => { if (notFound(e)) return undefined; throw e; });
     if (!versions) absent.push('cryptoKey');
@@ -160,5 +168,5 @@ export async function teardownGcp(options: Record<string, string>) {
     }
   }
   return { removed, absent, keptKey: options['--delete-key'] !== 'true',
-    note: options['--delete-key'] === 'true' ? 'Key versions are destroyed after the key\'s scheduled-destruction period (30 days by default); restore one with gcloud kms keys versions restore. The key and key ring names remain.' : 'The CryptoKey was kept; pass --delete-key to schedule destruction of its versions.' };
+    note: options['--delete-key'] === 'true' ? 'Decrypts fail now. Each version becomes unrecoverable at its destroyTime (the key\'s destroy-scheduled duration, 7 days when setup created it); until then gcloud kms keys versions restore undoes it. Key material can take up to 45 more days to leave Google\'s backups.' : 'The CryptoKey was kept; pass --delete-key to schedule destruction of its versions.' };
 }

@@ -42,7 +42,7 @@ The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FI
 
 `strongroom setup aws` turns the operator's existing `aws` CLI session into a working configuration in one non-interactive command: it creates (or reuses) the KMS key `alias/NAME`, creates a least-privilege IAM user (or grants an existing ECS task / EKS pod role with `--role-name`), writes a complete `STRONGROOM_CONFIG` plus a caller token to a new private directory, and proves the result with a real Encrypt/Decrypt. Verified against AWS on 2026-10-13 (about 20 s, of which about 12 s is IAM propagation).
 
-One setup provisions one tenant's deployment: `--tenant` becomes the configuration's `tenantId`. For another tenant, run setup again with its own `--tenant`, a distinct `--name` and a new `--directory`, and deploy it separately. Each tenant gets its own key, identity and service URL.
+One setup provisions one tenant's deployment. `--tenant` becomes the configuration's `tenantId`. It also names the resources: `sr-<tenant>`, or `sr-<slug>-<hash>` when the tenant is not already a safe lowercase name. The output directory follows the same name. For another tenant, run setup again with its `--tenant` and deploy the result separately; names, directories, keys and identities do not collide. `teardown aws|gcp --tenant T` finds the same resources. `--name` overrides the derived name for both commands.
 
 1. Plan. Nothing changes; the output lists every action and the IAM permissions the operator needs.
    ```sh
@@ -82,7 +82,7 @@ strongroom setup gcp --tenant acme --project my-project --service-account run-sa
 
 Defaults: `--name strongroom` (6-30 lowercase characters; names the key ring and service account), `--key primary`, `--location global`, `--protection-level software` (`hsm` is available), project from `gcloud config`, directory `.strongroom/gcp-NAME`. The service account key is read from a temporary private file, written only into `config.json` (0600), and the temporary file is deleted. Setup retries the IAM grant while a new service account propagates (observed: `INVALID_ARGUMENT` for a few seconds).
 
-Cloud KMS never deletes key rings or keys. `strongroom teardown gcp` removes the grant and the service account it created; `--delete-key` schedules destruction of every key version (30 days by default, restorable until then).
+`strongroom teardown gcp --tenant T` removes the grant and the service account setup created and keeps the key: a deleted CryptoKey name can never be reused. `--delete-key` schedules destruction of every key version. Each version becomes unrecoverable at the reported `destroyTime`, after the duration setup fixed when it created the key (`--destroy-scheduled-duration`, default 7 days). Until then, `gcloud kms keys versions restore` undoes it.
 
 | `error.code` | Exit | Meaning and next step |
 | --- | --- | --- |

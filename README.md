@@ -63,7 +63,7 @@ npx strongroom setup aws --tenant acme --dry-run   # plan and required IAM permi
 npx strongroom setup aws --tenant acme
 ```
 
-`setup gcp --tenant acme --project PROJECT` does the same with `gcloud` (add `--service-account EMAIL` on Cloud Run/GKE for keyless workload identity). `teardown aws|gcp` reverses them. See the agent runbooks for [AWS](docs/agents.md#install-strongroom-on-aws-agent-runbook) and [Google Cloud](docs/agents.md#install-strongroom-on-google-cloud-agent-runbook).
+`setup gcp --tenant acme --project PROJECT` does the same with `gcloud` (add `--service-account EMAIL` on Cloud Run/GKE for keyless workload identity). Resource names follow the tenant (`sr-acme`), so run setup once per tenant in the same account or project; `teardown aws|gcp --tenant acme` reverses it. See the agent runbooks for [AWS](docs/agents.md#install-strongroom-on-aws-agent-runbook) and [Google Cloud](docs/agents.md#install-strongroom-on-google-cloud-agent-runbook).
 
 ## Application integration
 

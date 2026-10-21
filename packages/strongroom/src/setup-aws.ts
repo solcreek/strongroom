@@ -3,7 +3,7 @@
 // stable error codes with a `next` command, `created` resources on partial failure, and an exact inverse.
 import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
-import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey } from './setup-common.ts';
+import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName } from './setup-common.ts';
 export { SetupError } from './setup-common.ts';
 
 // What the operator running setup needs; printed by --dry-run and on AWS_PERMISSION_DENIED.
@@ -44,11 +44,12 @@ function awsError(args: string[], code: string, stderr: string): SetupError {
 const notFound = (e: unknown) => e instanceof SetupError && ['NotFoundException', 'NoSuchEntity', 'NoSuchEntityException'].includes(String(e.details.awsCode));
 
 export async function setupAws(options: Record<string, string>) {
-  const name = options['--name'] ?? 'strongroom', tenantId = options['--tenant'], keyRef = options['--key'] ?? 'primary';
+  const tenantId = options['--tenant'], keyRef = options['--key'] ?? 'primary';
+  if (!tenantId) throw new SetupError('INVALID_INPUT', 'setup aws requires --tenant TENANT: the one tenant the new deployment serves.', 0, { path: '--tenant' });
+  const name = resourceName(options, 'setup aws');
   const o: Options = { name, region: options['--region'], profile: options['--profile'], role: options['--role-name'] };
   const directory = resolve(options['--directory'] ?? `.strongroom/aws-${name}`), dryRun = options['--dry-run'] === 'true', skipVerify = options['--no-verify'] === 'true';
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) throw new SetupError('INVALID_INPUT', '--name must match ^[A-Za-z0-9_-]{1,32}$; it names the KMS alias and IAM user.', 0, { path: '--name' });
-  if (!tenantId) throw new SetupError('INVALID_INPUT', 'setup aws requires --tenant TENANT: the one tenant the new deployment serves.', 0, { path: '--tenant' });
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(keyRef)) throw new SetupError('INVALID_INPUT', '--key must match ^[A-Za-z0-9_-]{1,64}$.', 0, { path: '--key' });
   await assertNewDirectory(directory);
   const aws = cli(o);
@@ -110,7 +111,7 @@ export async function setupAws(options: Record<string, string>) {
   }
 }
 export async function teardownAws(options: Record<string, string>) {
-  const name = options['--name'] ?? 'strongroom', role = options['--role-name'];
+  const name = resourceName(options, 'teardown aws'), role = options['--role-name'];
   const o: Options = { name, region: options['--region'], profile: options['--profile'], role };
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) throw new SetupError('INVALID_INPUT', '--name must match ^[A-Za-z0-9_-]{1,32}$.', 0, { path: '--name' });
   const aws = cli(o), removed: Record<string, string>[] = [], absent: string[] = [];

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCli } from './cli-helper.mjs';
 import { parseConfig } from '../service/config.ts';
+import { tenantName } from '../packages/strongroom/src/setup-common.ts';
 
 // A fake `aws` on PATH: answers from a scenario file and records every call, so setup runs offline and deterministically.
 const fake = `#!/usr/bin/env node
@@ -116,8 +117,27 @@ test('setup aws failures carry a stable code, a next step and the resources crea
   }
   assert.equal(JSON.parse((await run(['setup', 'aws', '--tenant', 'a', '--profile', 'nope', '--region', 'us-east-1'], { 'sts get-caller-identity': { stderr: 'The config profile (nope) could not be found' } })).stderr).error.code, 'AWS_PROFILE_NOT_FOUND');
   // Only the fake aws is on PATH here; gcp input errors are covered against a fake gcloud in setup-gcp.test.mjs.
-  for (const args of [['setup', 'aws', '--name', 'sr-test'], ['setup', 'aws', '--tenant', 'a', '--name', 'bad name'], ['teardown', 'aws', '--tenant', 'a']])
+  for (const args of [['setup', 'aws', '--name', 'sr-test'], ['setup', 'aws', '--tenant', 'a', '--name', 'bad name'], ['teardown', 'aws']])
     assert.equal((await run(args, ok)).code, 2, args.join(' '));
+  assert.equal(JSON.parse((await run(['teardown', 'aws'], ok)).stderr).error.path, '--tenant');
+});
+
+test('resource names follow the tenant, so tenants can share an account without --name', async t => {
+  for (const [tenant, name] of [['acme', 'sr-acme'], ['Acme', /^sr-acme-[0-9a-f]{6}$/], ['ab', /^sr-ab-[0-9a-f]{6}$/], ['日本', /^sr-[0-9a-f]{6}$/], ['x'.repeat(40), /^sr-x{20}-[0-9a-f]{6}$/]]) {
+    const derived = tenantName(tenant);
+    if (typeof name === 'string') assert.equal(derived, name); else assert.match(derived, name);
+    // Valid as a KMS alias and IAM user, and as a GCP key ring and service account id.
+    assert.match(derived, /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/); assert.match(derived, /^[A-Za-z0-9_-]{1,32}$/);
+  }
+  assert.notEqual(tenantName('Acme'), tenantName('acme'));
+  const { dir, run } = await harness(t);
+  const setup = await run(['setup', 'aws', '--tenant', 'acme', '--region', 'us-east-1', '--directory', join(dir, 'acme'), '--dry-run'], ok);
+  assert.equal(setup.code, 0, setup.stderr);
+  assert.ok(setup.calls.some(c => c.includes('alias/sr-acme')) && setup.calls.some(c => c.includes('sr-acme') && c[1] === 'get-user'));
+  // Teardown derives the same names from the tenant alone.
+  const teardown = await run(['teardown', 'aws', '--tenant', 'acme', '--region', 'us-east-1'], ok);
+  assert.ok(teardown.calls.every(c => !c.includes('--user-name') || c.includes('sr-acme')));
+  assert.ok(teardown.calls.some(c => c.includes('sr-acme')));
 });
 
 test('teardown aws removes exactly what setup created and is idempotent', async t => {
