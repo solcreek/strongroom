@@ -22,7 +22,7 @@ Each run prints one JSON line per step and exits non-zero if any property it dem
 To run an example against real deployments, provision and deploy one per tenant. Resource names and output directories follow the tenant, so tenants in one account or project do not collide:
 
 ```sh
-strongroom setup aws --tenant acme      # alias/sr-acme, IAM user sr-acme, .strongroom/aws-sr-acme
+strongroom setup aws --tenant acme      # alias/sr-acme-822b33ad87, IAM user sr-acme-822b33ad87, .strongroom/aws-sr-acme-822b33ad87
 strongroom setup aws --tenant globex
 strongroom teardown aws --tenant globex --delete-key   # offboarding: removes globex's identity, schedules its key's deletion
 ```
