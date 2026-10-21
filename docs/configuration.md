@@ -32,7 +32,7 @@ The SDK/CLI receives the original random token via `STRONGROOM_TOKEN` or `STRONG
 node packages/strongroom/dist/cli.js token --token-file .strongroom/production-token --keys primary --permissions encrypt,decrypt
 ```
 
-The token goes only to the new 0600 file (an existing path is refused). Stdout returns `tokenSha256` and, with `--keys`, a complete `principal` object to append to `principals`. Principals carry no tenant: a token for this deployment can only act for this deployment's tenant. A principal with a `tenantId` field is rejected with a pointer to `$.tenantId`. Distribute the original token only to the intended application. Rotate Strongroom tokens by adding a second principal with the new digest, migrating callers, then removing the old digest. Duplicate digests are rejected. Principals are bounded to 1000 and keys to 100 per deployment.
+The token goes only to the new 0600 file (an existing path is refused). Stdout returns `tokenSha256` and, with `--keys`, a complete `principal` object to append to `principals`. Principals carry no tenant: a token for this deployment can only act for this deployment's tenant. A principal that still has a `tenantId` field is rejected with `error.path` `$.principals[N].tenantId` and a message saying to move it to `$.tenantId`. Distribute the original token only to the intended application. Rotate Strongroom tokens by adding a second principal with the new digest, migrating callers, then removing the old digest. Duplicate digests are rejected. Principals are bounded to 1000 and keys to 100 per deployment.
 
 ## AWS KMS
 
