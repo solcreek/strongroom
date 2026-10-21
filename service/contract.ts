@@ -43,7 +43,7 @@ export const capabilities = {
     UNSUPPORTED_MEDIA_TYPE: { status: 415, retryable: false, action: 'Send Content-Type: application/json.' },
     INTERNAL_ERROR: { status: 500, retryable: false, action: 'Report the requestId to the operator.' },
     KMS_ACCESS_DENIED: { status: 502, retryable: false, action: 'Operator: the service KMS credentials or IAM grant were rejected. Fix credentials or permissions; retrying unchanged will not succeed.' },
-    KMS_KEY_UNAVAILABLE: { status: 502, retryable: false, action: 'Operator: the configured KMS key is missing, disabled or pending deletion. Re-enable it; never remap the key reference.' },
+    KMS_KEY_UNAVAILABLE: { status: 502, retryable: false, action: 'Operator: the configured KMS key is missing, disabled, pending deletion or destroyed (providers do not tell these apart). If the tenant was offboarded with teardown --delete-key, this is the intended result: do not restore. Otherwise re-enable the key or cancel its deletion; never remap the key reference.' },
     KMS_UNAVAILABLE: { status: 503, retryable: true, action: 'Retry with bounded exponential backoff; preserve the stored envelope.' },
     NOT_CONFIGURED: { status: 503, retryable: false, action: 'Operator: run strongroom config-check against the service configuration.' },
   },
