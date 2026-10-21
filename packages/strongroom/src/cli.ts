@@ -69,7 +69,7 @@ async function initialize(directory: string, tenantId = 'development', portText 
   await writeFile(clientEnv, `STRONGROOM_URL=http://127.0.0.1:${port}\nSTRONGROOM_TOKEN=${token}\n`, secret);
   await writeFile(resolve(dir, '.gitignore'), '*\n', secret);
   return { mode: 'local-development-only', directory: dir, config: configPath, serverEnv, clientEnv, tenantId, key: 'primary', url: `http://127.0.0.1:${port}`,
-    next: `node --env-file=${serverEnv} dist/server.js, then use ${clientEnv} for the CLI or SDK` };
+    next: `node --env-file=${serverEnv} dist/server.js in a shell without PORT, HOST or STRONGROOM_CONFIG set (already-set variables win over the file), then use ${clientEnv} for the CLI or SDK` };
 }
 // The token itself only ever reaches the new private file; stdout carries the digest the service configuration needs.
 async function createToken(options: Record<string, string>) {

@@ -34,6 +34,8 @@ npm run cli -- init --tenant acme --port 8801 --directory .strongroom/acme
 node --env-file=.strongroom/acme/server.env dist/server.js   # then use .strongroom/acme/client.env
 ```
 
+`--env-file` never overrides a variable the shell already sets, so start each host from a shell without `PORT`, `HOST` or `STRONGROOM_CONFIG`.
+
 In another terminal, run the complete SDK example:
 
 ```sh

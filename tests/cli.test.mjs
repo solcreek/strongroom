@@ -26,7 +26,9 @@ test('CLI init makes one local deployment per tenant and port, and its env files
     assert.equal(info.tenantId, 'acme'); assert.equal(info.url, `http://127.0.0.1:${port}`);
     assert.equal(JSON.parse(await readFile(info.config, 'utf8')).tenantId, 'acme');
     // The generated env files are what a developer or agent runs: start the real host with them.
-    server = spawn(process.execPath, [`--env-file=${info.serverEnv}`, 'dist/server.js'], { stdio: 'ignore' });
+    // --env-file never overrides variables already set, so start from an environment without them.
+    const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'PORT' && k !== 'HOST' && !k.startsWith('STRONGROOM_')));
+    server = spawn(process.execPath, [`--env-file=${info.serverEnv}`, 'dist/server.js'], { stdio: 'ignore', env: clean });
     let ready = false;
     for (let i = 0; i < 200 && !ready; i++) { try { ready = (await fetch(`${info.url}/readyz`)).ok; } catch { await new Promise(r => setTimeout(r, 25)); } }
     assert.ok(ready, 'host did not start from server.env');
