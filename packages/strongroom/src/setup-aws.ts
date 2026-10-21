@@ -17,6 +17,9 @@ export function kmsPolicy(keyArn: string) {
   return { Version: '2012-10-17', Statement: [{ Sid: 'StrongroomEnvelope', Effect: 'Allow', Action: ['kms:Encrypt', 'kms:Decrypt'], Resource: keyArn,
     Condition: { Null: { 'kms:EncryptionContext:strongroom': 'false' }, 'ForAllValues:StringEquals': { 'kms:EncryptionContextKeys': ['strongroom'] } } }] };
 }
+// Key order does not matter when comparing a policy IAM returns with the one setup writes.
+const canonical = (v: unknown): string => Array.isArray(v) ? `[${v.map(canonical).join(',')}]`
+  : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`).join(',')}}` : JSON.stringify(v);
 interface Options { name: string; region?: string; profile?: string; role?: string }
 type Aws = (args: string[]) => Promise<any>;
 
@@ -130,14 +133,22 @@ export async function teardownAws(options: Record<string, string>) {
     const ok = tenant ? tags.some(t => t.key === 'strongroom-tenant' && t.value === tenantTag(tenant)) : tags.some(t => t.key === 'app' && t.value === 'strongroom');
     if (!ok) throw new SetupError('NOT_OWNED', `${what} was not created by setup${tenant ? ' for this tenant' : ''}; teardown changed nothing.`, 0, { resource: what, next: 'Check --tenant or --name.' });
   };
-  const keyTags = async (keyId: string) => ((await aws(['kms', 'list-resource-tags', '--key-id', keyId]).catch(e => { if (notFound(e)) return {}; throw e; })).Tags ?? [])
+  const keyTags = async (keyId: string) => ((await aws(['kms', 'list-resource-tags', '--key-id', keyId])).Tags ?? [])
     .map((t: { TagKey: string; TagValue: string }) => ({ key: t.TagKey, value: t.TagValue }));
   let userTags, rolePolicy, key;
   if (role) {
-    // The role is the operator's; what teardown may remove is the grant on this tenant's key.
+    // The role is the operator's; teardown may remove only the grant setup wrote on this tenant's key. Fail
+    // closed: the policy must have setup's exact shape (one statement on one key ARN), and that key must carry
+    // the marker or be gone. Anything else is refused rather than guessed at.
     rolePolicy = await aws(['iam', 'get-role-policy', '--role-name', role, '--policy-name', policyName]).catch(gone('rolePolicy'));
-    const granted = [rolePolicy?.PolicyDocument?.Statement ?? []].flat().map((s: { Resource?: string }) => s.Resource).find(Boolean);
-    if (granted) { const tags = await keyTags(granted); if (tags.length) owned(tags, `KMS key ${granted} granted by ${role}/${policyName}`); }
+    if (rolePolicy) {
+      const what = `${role}/${policyName}`, statements = rolePolicy.PolicyDocument?.Statement;
+      const granted = Array.isArray(statements) && statements.length === 1 ? statements[0].Resource : undefined;
+      if (typeof granted !== 'string' || !/^arn:aws(?:-us-gov|-cn)?:kms:[a-z0-9-]+:\d{12}:key\/[a-zA-Z0-9-]+$/.test(granted) || canonical(rolePolicy.PolicyDocument) !== canonical(kmsPolicy(granted)))
+        throw new SetupError('NOT_OWNED', `${what} is not the policy setup writes; teardown changed nothing.`, 0, { resource: what, next: `Inspect it with aws iam get-role-policy --role-name ${role} --policy-name ${policyName}.` });
+      const tags = await keyTags(granted).catch(e => { if (notFound(e)) return undefined; throw e; });
+      if (tags) owned(tags, `KMS key ${granted} granted by ${what}`); // a key that no longer exists cannot be anyone's
+    }
   } else {
     userTags = await aws(['iam', 'list-user-tags', '--user-name', name]).catch(gone('iamUser'));
     if (userTags) owned((userTags.Tags ?? []).map((t: { Key: string; Value: string }) => ({ key: t.Key, value: t.Value })), `IAM user ${name}`);

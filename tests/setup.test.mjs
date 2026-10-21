@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { runCli } from './cli-helper.mjs';
 import { parseConfig } from '../service/config.ts';
 import { tenantName, tenantTag } from '../packages/strongroom/src/setup-common.ts';
+import { kmsPolicy } from '../packages/strongroom/src/setup-aws.ts';
 
 // A fake `aws` on PATH: answers from a scenario file and records every call, so setup runs offline and deterministically.
 const fake = `#!/usr/bin/env node
@@ -176,10 +177,25 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
   const absent = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': err('NotFoundException', 'DescribeKey') });
   assert.equal(absent.code, 0); assert.deepEqual(JSON.parse(absent.stdout).absent, ['iamUser', 'kmsKey']);
   // A shared role keeps one policy per deployment; teardown removes this one only if its key is this tenant's.
-  const granted = { 'iam get-role-policy': { stdout: { PolicyDocument: { Statement: [{ Resource: arn }] } } }, 'kms list-resource-tags': present['kms list-resource-tags'] };
-  const role = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--role-name', 'task'], granted);
+  const granted = { 'iam get-role-policy': { stdout: { PolicyDocument: kmsPolicy(arn) } }, 'kms list-resource-tags': present['kms list-resource-tags'] };
+  const roleArgs = tenant => ['teardown', 'aws', '--tenant', tenant, '--name', 'sr-test', '--region', 'us-east-1', '--role-name', 'task'];
+  const role = await run(roleArgs('acme'), granted);
   assert.equal(role.code, 0, role.stderr); assert.deepEqual(role.ops, ['iam get-role-policy', 'kms list-resource-tags', 'iam delete-role-policy']);
   assert.ok(role.calls.find(c => c[1] === 'delete-role-policy').includes('strongroom-kms-sr-test'));
-  const otherRole = await run(['teardown', 'aws', '--tenant', 'globex', '--name', 'sr-test', '--region', 'us-east-1', '--role-name', 'task'], granted);
-  assert.equal(otherRole.code, 2); assert.deepEqual(mutating(otherRole.ops), []);
+  // Fail closed: another tenant's key, an untagged key, or a policy that is not setup's exact shape is refused.
+  const { Statement: [statement] } = kmsPolicy(arn);
+  for (const [why, tenant, scenario] of [
+    ['other tenant', 'globex', granted],
+    ['untagged key', 'acme', { ...granted, 'kms list-resource-tags': { stdout: { Tags: [] } } }],
+    ['NotResource', 'acme', { ...granted, 'iam get-role-policy': { stdout: { PolicyDocument: { ...kmsPolicy(arn), Statement: [{ ...statement, Resource: undefined, NotResource: arn }] } } } }],
+    ['two statements', 'acme', { ...granted, 'iam get-role-policy': { stdout: { PolicyDocument: { ...kmsPolicy(arn), Statement: [statement, statement] } } } }],
+    ['wider actions', 'acme', { ...granted, 'iam get-role-policy': { stdout: { PolicyDocument: { ...kmsPolicy(arn), Statement: [{ ...statement, Action: ['kms:*'] }] } } } }],
+    ['no document', 'acme', { ...granted, 'iam get-role-policy': { stdout: {} } }],
+  ]) {
+    const refused = await run(roleArgs(tenant), scenario);
+    assert.equal(refused.code, 2, why); assert.equal(JSON.parse(refused.stderr).error.code, 'NOT_OWNED', why); assert.deepEqual(mutating(refused.ops), [], why);
+  }
+  // A grant on a key that no longer exists is no one's, so it is removed.
+  const keyGone = await run(roleArgs('acme'), { ...granted, 'kms list-resource-tags': err('NotFoundException', 'ListResourceTags') });
+  assert.equal(keyGone.code, 0, keyGone.stderr); assert.ok(keyGone.ops.includes('iam delete-role-policy'));
 });
