@@ -181,17 +181,22 @@ export async function teardownAws(options: Record<string, string>) {
     await aws(['iam', 'delete-user', '--user-name', name]); removed.push({ iamUser: name });
   }
   // Deleting the key makes every envelope wrapped by it unrecoverable after the waiting period; it is opt-in.
-  if (deleteKey) {
-    if (key) {
-      await aws(['kms', 'delete-alias', '--alias-name', `alias/${name}`]); removed.push({ alias: `alias/${name}` });
-      const r = await aws(['kms', 'schedule-key-deletion', '--key-id', key.KeyMetadata.Arn, '--pending-window-in-days', '7']);
-      removed.push({ kmsKeyScheduledForDeletion: key.KeyMetadata.Arn, deletionDate: r.DeletionDate });
+  // Schedule first and remove the alias last: if scheduling fails, the alias still leads a rerun to the key.
+  let scheduled = false;
+  if (deleteKey && key) {
+    const m = key.KeyMetadata;
+    if (m.KeyState === 'PendingDeletion') removed.push({ kmsKeyAlreadyScheduledForDeletion: m.Arn, deletionDate: m.DeletionDate });
+    else {
+      const r = await aws(['kms', 'schedule-key-deletion', '--key-id', m.Arn, '--pending-window-in-days', '7']);
+      removed.push({ kmsKeyScheduledForDeletion: m.Arn, deletionDate: r.DeletionDate });
     }
+    scheduled = true;
+    await aws(['kms', 'delete-alias', '--alias-name', `alias/${name}`]); removed.push({ alias: `alias/${name}` });
   }
-  // Report what happened, not what was asked: "not found here" must never read as a completed crypto-shred.
-  const scheduled = removed.some(r => 'kmsKeyScheduledForDeletion' in r);
-  return { removed, absent, keptKey: !scheduled, keyScheduledForDeletion: scheduled,
-    note: scheduled ? 'Decrypts fail now; the KMS key is deleted after 7 days. Cancel with aws kms cancel-key-deletion if envelopes still need it.'
-      : deleteKey ? `No key found at alias/${name} in ${o.region ?? 'the profile region'}: nothing was scheduled for deletion. If the tenant's key exists, rerun with its --region (and --name if setup used one).`
+  // Report the key's state, not what was asked: true kept, false scheduled for deletion (now or earlier),
+  // null not found. "Not found here" must never read as a completed crypto-shred.
+  return { removed, absent, keptKey: !deleteKey ? true : scheduled ? false : null, keyScheduledForDeletion: scheduled,
+    note: scheduled ? 'Decrypts fail now; the KMS key is deleted at deletionDate (7 days after it was scheduled). Cancel with aws kms cancel-key-deletion if envelopes still need it.'
+      : deleteKey ? `No key found at alias/${name} in ${o.region ?? 'the profile region'}, so nothing was scheduled now. An earlier teardown may already have scheduled the key and removed its alias, or the key is in another --region or under another --name. Find it by its strongroom-tenant tag (${tenantTag(tenant)}) with aws kms list-keys and aws kms list-resource-tags.`
       : 'The KMS key was kept; pass --delete-key to schedule its deletion.' };
 }

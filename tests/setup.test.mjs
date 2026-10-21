@@ -181,7 +181,18 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
   const r = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);
   assert.equal(r.code, 0, r.stderr);
   // Every ownership check (user, then key) runs before the first deletion.
-  assert.deepEqual(r.ops, ['iam list-user-tags', 'kms describe-key', 'kms list-resource-tags', 'iam list-access-keys', 'iam delete-access-key', 'iam delete-access-key', 'iam delete-user-policy', 'iam delete-user', 'kms delete-alias', 'kms schedule-key-deletion']);
+  // Every ownership check runs before the first deletion; the key is scheduled before its alias goes, so a failed
+  // schedule leaves the alias for a rerun to find.
+  assert.deepEqual(r.ops, ['iam list-user-tags', 'kms describe-key', 'kms list-resource-tags', 'iam list-access-keys', 'iam delete-access-key', 'iam delete-access-key', 'iam delete-user-policy', 'iam delete-user', 'kms schedule-key-deletion', 'kms delete-alias']);
+  const failedSchedule = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { ...present, 'kms schedule-key-deletion': err('KMSInternalException', 'ScheduleKeyDeletion') });
+  assert.notEqual(failedSchedule.code, 0); assert.ok(!failedSchedule.ops.includes('kms delete-alias'));
+  // A rerun finds the key already pending deletion: reported as scheduled, not scheduled twice.
+  const rerun = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'],
+    { ...present, 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn, KeyState: 'PendingDeletion', DeletionDate: '2026-10-28' } } } });
+  assert.equal(rerun.code, 0, rerun.stderr); assert.ok(!rerun.ops.includes('kms schedule-key-deletion'));
+  const rerunOut = JSON.parse(rerun.stdout);
+  assert.deepEqual([rerunOut.keptKey, rerunOut.keyScheduledForDeletion], [false, true]);
+  assert.ok(rerunOut.removed.some(x => x.kmsKeyAlreadyScheduledForDeletion === arn && x.deletionDate === '2026-10-28'));
   // Resources tagged for another tenant, or not created by setup, are refused before anything is deleted.
   const mutating = ops => ops.filter(o => /delete|schedule/.test(o));
   const foreignUser = await run(['teardown', 'aws', '--tenant', 'globex', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);
@@ -201,9 +212,10 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
   assert.ok(!kept.ops.some(o => o.startsWith('kms')) && JSON.parse(kept.stdout).keptKey);
   const absent = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': err('NotFoundException', 'DescribeKey') });
   assert.equal(absent.code, 0); assert.deepEqual(JSON.parse(absent.stdout).absent, ['iamUser', 'kmsKey']);
-  // A key not found in this region was not deleted, and the result must say so rather than report a crypto-shred.
+  // A key not found here is neither kept nor deleted as far as teardown knows (null), and the note says so.
   const absentOut = JSON.parse(absent.stdout);
-  assert.equal(absentOut.keyScheduledForDeletion, false); assert.equal(absentOut.keptKey, true); assert.match(absentOut.note, /nothing was scheduled/);
+  assert.equal(absentOut.keyScheduledForDeletion, false); assert.equal(absentOut.keptKey, null); assert.match(absentOut.note, /nothing was scheduled now/);
+  assert.equal(JSON.parse(kept.stdout).keptKey, true);
   assert.equal(JSON.parse(r.stdout).keyScheduledForDeletion, true);
   // A shared role keeps one policy per deployment; teardown removes this one only if its key is this tenant's.
   const granted = { 'iam get-role-policy': { stdout: { PolicyDocument: kmsPolicy(arn) } }, 'kms list-resource-tags': present['kms list-resource-tags'] };

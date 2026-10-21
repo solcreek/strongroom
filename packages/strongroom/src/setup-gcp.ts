@@ -193,11 +193,11 @@ export async function teardownGcp(options: Record<string, string>) {
       removed.push({ cryptoKeyVersionScheduledForDestruction: v.name, destroyTime: r.destroyTime });
     }
   }
-  // Report what happened, not what was asked: "not found here" must never read as a completed crypto-shred.
-  const scheduled = removed.some(r => 'cryptoKeyVersionScheduledForDestruction' in r);
-  return { removed, absent, keptKey: !scheduled, versionsScheduledForDestruction: removed.filter(r => 'cryptoKeyVersionScheduledForDestruction' in r).length,
-    note: scheduled ? 'Decrypts fail now. Each version becomes unrecoverable at its destroyTime (the key\'s destroy-scheduled duration, 7 days when setup created it); until then gcloud kms keys versions restore undoes it. Key material can take up to 45 more days to leave Google\'s backups.'
-      : deleteKey && !key ? `No CryptoKey ${keyRef} in key ring ${keyRing} (${location}): nothing was scheduled for destruction. If the tenant's key exists, rerun with its --location, --keyring, --key or --name.`
-      : deleteKey ? 'The CryptoKey has no enabled or disabled versions left: they were already destroyed or scheduled for destruction. Nothing new was scheduled.'
+  // Report the key's state, not what was asked: true kept, false no usable version left (destroyed or scheduled,
+  // now or earlier), null not found. "Not found here" must never read as a completed crypto-shred.
+  const scheduledNow = removed.filter(r => 'cryptoKeyVersionScheduledForDestruction' in r).length;
+  return { removed, absent, keptKey: !deleteKey ? true : key ? false : null, versionsScheduledForDestruction: scheduledNow,
+    note: deleteKey && !key ? `No CryptoKey ${keyRef} in key ring ${keyRing} (${location}), so nothing was scheduled. If the tenant's key exists, rerun with its --location, --keyring, --key or --name.`
+      : deleteKey ? `${scheduledNow ? `Scheduled ${scheduledNow} version(s) for destruction; d` : 'Every version was already destroyed or scheduled for destruction by an earlier teardown; d'}ecrypts fail now. Each version becomes unrecoverable at its destroyTime (the key's destroy-scheduled duration, 7 days when setup created it); until then gcloud kms keys versions restore undoes it. Key material can take up to 45 more days to leave Google's backups.`
       : 'The CryptoKey was kept; pass --delete-key to schedule destruction of its versions.' };
 }
