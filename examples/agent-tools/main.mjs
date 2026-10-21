@@ -39,7 +39,9 @@ try {
   ]) transcript.push({ user: session.user, call, output: await runTool(session, call) });
 
   assert.ok(!JSON.stringify(transcript).includes(secret));
-  step('transcript', { entries: transcript.map(t => t.output.error ?? `sent ${t.output.result.id}`), secretInTranscript: false });
+  // The record-level check, not the absence of the secret, is what stops Mallory: assert it refused her.
+  assert.deepEqual(transcript.find(t => t.user === 'mallory').output, { error: 'credential not available to this user' });
+  step('transcript', { entries: transcript.map(t => ({ user: t.user, outcome: t.output.error ?? `sent ${t.output.result.id}` })), secretInTranscript: false });
   // There is no "read secret" tool: decrypt is a capability of the runtime, not something the model can ask for.
   step('model-visible', { tools: ['send_email'], argument: 'credential handle only' });
 } finally { await acme.stop(); }

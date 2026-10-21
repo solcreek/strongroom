@@ -27,5 +27,10 @@ test('examples run end to end and keep secrets out of what they store and show',
   assert.equal(data[0].plaintextOnVolume, false); assert.equal(data.at(-1).globexSnapshotReadable, false);
 
   const agent = await run('agent-tools');
-  assert.equal(agent[0].secretInTranscript, false); assert.equal(agent[0].entries.length, 3);
+  assert.equal(agent[0].secretInTranscript, false);
+  assert.deepEqual(agent[0].entries, [
+    { user: 'alice', outcome: 'sent msg_42' },
+    { user: 'alice', outcome: 'rejected recipient eve@elsewhere.test for key [redacted]' },
+    { user: 'mallory', outcome: 'credential not available to this user' },
+  ]);
 });
