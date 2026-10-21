@@ -38,7 +38,10 @@ async function open(tenant, version = 1, files = volume) {
 async function writeFile(tenant, key, version, path, text) {
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: new TextEncoder().encode(`${tenant}/${path}`) }, key, new TextEncoder().encode(text)));
-  volume.set(`${tenant}/${path}`, Uint8Array.of(version, ...nonce, ...ciphertext));
+  // Copy into one buffer: spreading a large ciphertext into arguments would overflow the call stack.
+  const blob = new Uint8Array(13 + ciphertext.length);
+  blob[0] = version; blob.set(nonce, 1); blob.set(ciphertext, 13);
+  volume.set(`${tenant}/${path}`, blob);
 }
 async function readFile(tenant, keys, path, files = volume) {
   const blob = files.get(`${tenant}/${path}`);
@@ -54,7 +57,9 @@ try {
   step('files-written', { tenants: 2, plaintextOnVolume: [...volume.values()].some(b => new TextDecoder().decode(b).includes('private notes')) });
 
   const acmeKeys = { 1: await open('acme') };
-  step('read', { acme: await readFile('acme', acmeKeys, 'notes.db') });
+  // Bulk files never touch Strongroom: a 1 MiB file is one local AES-GCM call under the unwrapped DEK.
+  await writeFile('acme', acmeKeys[1], 1, 'index.bin', 'x'.repeat(1 << 20));
+  step('read', { acme: await readFile('acme', acmeKeys, 'notes.db'), bulkBytes: (await readFile('acme', acmeKeys, 'index.bin')).length });
 
   // Tenants never share a deployment: acme's wrapped DEK sent to globex's deployment is refused.
   const acmeEnvelope = JSON.parse(new TextDecoder().decode(volume.get('acme/dek/v1.json')));
