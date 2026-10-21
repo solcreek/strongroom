@@ -32,7 +32,7 @@ const key = await client.decryptBytes({ envelope: sealed, context });
 try { useKey(key); } finally { key.fill(0); }
 ```
 
-A binary envelope read with `decrypt` fails with `PLAINTEXT_NOT_TEXT`.
+Always read data keys with `decryptBytes`. `decrypt` returns any plaintext that happens to be valid UTF-8 as a string, and fails with `PLAINTEXT_NOT_TEXT` only for bytes that are not.
 
 `StrongroomError` exposes `code`, `status`, `retryable`, `requestId`, `path` (the offending input field) and `toJSON()`. Calls accept `{signal}`; the default deadline is 20 seconds; redirects are rejected; HTTP is allowed only on loopback; nothing is retried automatically. For a Cloud Run service with invoker IAM, pass `cloudRunIdToken`. Provide a custom `fetch` for Worker service bindings or other platform authentication.
 
