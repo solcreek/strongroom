@@ -2,8 +2,11 @@
 
 Store one JSON object in the secret environment binding `STRONGROOM_CONFIG`. Keep `STRONGROOM_ALLOW_LOCAL=false` for managed deployments. Node reads configuration at startup; Workers rebuilds its cached service when bindings change. Unknown fields and unsupported providers fail closed.
 
+**One deployment serves exactly one tenant.** `tenantId` names it, and every request's `context.tenantId` must equal it. To serve many tenants, run one deployment per tenant, each with its own KMS key and its own KMS identity, ideally in its own GCP project or AWS account. A shared identity that can reach every tenant's keys would expose all of them if that one identity were compromised, so the schema cannot express a second tenant. See [security](security.md#tenant-isolation).
+
 ```json
 {
+  "tenantId": "your-tenant-id",
   "keys": {
     "primary": {
       "provider": "aws",
@@ -15,7 +18,6 @@ Store one JSON object in the secret environment binding `STRONGROOM_CONFIG`. Kee
   },
   "principals": [{
     "tokenSha256": "REPLACE-WITH-SHA256-HEX-OF-RANDOM-TOKEN",
-    "tenantId": "your-tenant-id",
     "permissions": ["encrypt", "decrypt"],
     "keys": ["primary"]
   }]
@@ -27,10 +29,10 @@ Replace placeholders before use. Put the file under an ignored private directory
 The SDK/CLI receives the original random token via `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FILE`, plus `STRONGROOM_URL`. The service receives only its digest. Generate a token without displaying it:
 
 ```sh
-node packages/strongroom/dist/cli.js token --token-file .strongroom/production-token --tenant your-tenant-id --keys primary --permissions encrypt,decrypt
+node packages/strongroom/dist/cli.js token --token-file .strongroom/production-token --keys primary --permissions encrypt,decrypt
 ```
 
-The token goes only to the new 0600 file (an existing path is refused). Stdout returns `tokenSha256` and, with `--tenant` and `--keys`, a complete `principal` object to append to `principals`. Distribute the original token only to the intended application. Rotate Strongroom tokens by adding a second principal with the new digest, migrating callers, then removing the old digest. Duplicate digests are rejected. Principals are bounded to 1000 and keys to 100 per service instance; use separate deployments when appropriate.
+The token goes only to the new 0600 file (an existing path is refused). Stdout returns `tokenSha256` and, with `--keys`, a complete `principal` object to append to `principals`. Principals carry no tenant: a token for this deployment can only act for this deployment's tenant. A principal that still has a `tenantId` field is rejected with `error.path` `$.principals[N].tenantId` and a message saying to move it to `$.tenantId`. Distribute the original token only to the intended application. Rotate Strongroom tokens by adding a second principal with the new digest, migrating callers, then removing the old digest. Duplicate digests are rejected. Principals are bounded to 1000 and keys to 100 per deployment.
 
 ## AWS KMS
 

@@ -23,9 +23,9 @@ const help = {
     'setup gcp': 'Create (or reuse) Cloud KMS key ring NAME and CryptoKey --key, a service account NAME granted only that key, and a key file; or grant an existing Cloud Run/GKE --service-account (metadataServer, no key file). Uses your gcloud session; writes a complete STRONGROOM_CONFIG and a caller token to a new private --directory; verifies with real encrypt/decrypt. Requires --tenant. Use --dry-run first.',
     'teardown gcp': 'Inverse of setup gcp: remove the key binding and delete the service account (or only the binding with --service-account). Versions are destroyed only with --delete-key; key and key ring names cannot be deleted in Cloud KMS.',
     'teardown aws': 'Inverse of setup aws: delete the IAM user and its access keys (or the role policy). The KMS key is kept unless --delete-key, which schedules deletion in 7 days.',
-    token: 'Write a new random bearer token to a NEW --token-file FILE (mode 0600); return its SHA-256 digest, and a principal entry when --tenant and --keys are given.',
+    token: 'Write a new random bearer token to a NEW --token-file FILE (mode 0600); return its SHA-256 digest, and a principal entry when --keys is given. A principal has no tenant: the deployment serves one ($.tenantId).',
   },
-  flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'token: principal tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--key': 'probe and setup: key reference (setup default primary)', '--name': 'setup/teardown: KMS alias and IAM user name (default strongroom)', '--region': 'setup/teardown: AWS region (default: profile region)', '--profile': 'setup/teardown: aws CLI profile', '--role-name': 'setup/teardown: existing ECS task / EKS pod role to grant instead of creating a user', '--dry-run': 'setup: print the plan only (no value)', '--delete-key': 'teardown: also schedule KMS key deletion (no value)', '--no-verify': 'setup: skip the live Encrypt/Decrypt check (no value)', '--project': 'setup/teardown gcp: project (default: gcloud config)', '--location': 'setup/teardown gcp: Cloud KMS location (default global)', '--keyring': 'setup/teardown gcp: key ring (default --name)', '--service-account': 'setup/teardown gcp: existing workload service account to grant instead of creating one', '--protection-level': 'setup gcp: software (default) or hsm', '--envelope': 'decrypt: file holding {envelope} or an envelope', '--plaintext-file': 'encrypt: read raw plaintext bytes from FILE; decrypt: write raw plaintext bytes to a NEW 0600 FILE','--record': 'probe: recordId (default strongroom-probe)', '--help': 'This JSON document', '--version': 'JSON version' },
+  flags: { '--input': 'FILE or - (stdin)', '--output': 'Write JSON to a NEW file with mode 0600; existing files are never overwritten.', '--directory': 'init output directory', '--token-file': 'token: new private file for the bearer token', '--tenant': 'setup: the one tenant the new deployment serves; probe: the context tenantId', '--keys': 'token: comma-separated key references', '--permissions': 'token: comma-separated encrypt,decrypt (default both)', '--key': 'probe and setup: key reference (setup default primary)', '--name': 'setup/teardown: KMS alias and IAM user name (default strongroom)', '--region': 'setup/teardown: AWS region (default: profile region)', '--profile': 'setup/teardown: aws CLI profile', '--role-name': 'setup/teardown: existing ECS task / EKS pod role to grant instead of creating a user', '--dry-run': 'setup: print the plan only (no value)', '--delete-key': 'teardown: also schedule KMS key deletion (no value)', '--no-verify': 'setup: skip the live Encrypt/Decrypt check (no value)', '--project': 'setup/teardown gcp: project (default: gcloud config)', '--location': 'setup/teardown gcp: Cloud KMS location (default global)', '--keyring': 'setup/teardown gcp: key ring (default --name)', '--service-account': 'setup/teardown gcp: existing workload service account to grant instead of creating one', '--protection-level': 'setup gcp: software (default) or hsm', '--envelope': 'decrypt: file holding {envelope} or an envelope', '--plaintext-file': 'encrypt: read raw plaintext bytes from FILE; decrypt: write raw plaintext bytes to a NEW 0600 FILE','--record': 'probe: recordId (default strongroom-probe)', '--help': 'This JSON document', '--version': 'JSON version' },
   environment: ['STRONGROOM_URL', 'STRONGROOM_TOKEN', 'STRONGROOM_TOKEN_FILE', 'STRONGROOM_CLOUD_RUN_ID_TOKEN (Cloud Run invoker IAM, e.g. $(gcloud auth print-identity-token))'],
   output: { success: 'One JSON object on stdout, or --output FILE.', error: 'One JSON error object on stderr. No stack traces.' },
   exitCodes: { '0': 'success', '2': 'input/configuration error', '3': 'authentication/authorization error', '4': 'request/decryption rejected', '5': 'retryable network/provider error', '6': 'service KMS credentials or key need operator action; do not retry unchanged', '1': 'other failure' },
@@ -54,8 +54,8 @@ async function initialize(directory: string) {
   const dir = resolve(directory);
   await mkdir(dir, { recursive: false, mode: 0o700 });
   const token = randomBytes(32).toString('base64url');
-  const config = { keys: { primary: { provider: 'local', kek: randomBytes(32).toString('base64url') } }, principals: [{
-    tokenSha256: createHash('sha256').update(token).digest('hex'), tenantId: 'development', permissions: ['encrypt', 'decrypt'], keys: ['primary'],
+  const config = { tenantId: 'development', keys: { primary: { provider: 'local', kek: randomBytes(32).toString('base64url') } }, principals: [{
+    tokenSha256: createHash('sha256').update(token).digest('hex'), permissions: ['encrypt', 'decrypt'], keys: ['primary'],
   }] };
   const configPath = resolve(dir, 'config.json'), serverEnv = resolve(dir, 'server.env'), clientEnv = resolve(dir, 'client.env');
   const secret = { mode: 0o600, flag: 'wx' };
@@ -70,13 +70,13 @@ async function createToken(options: Record<string, string>) {
   const file = options['--token-file'];
   if (!file) fail('token requires --token-file FILE (a new path).');
   const list = (v?: string) => v?.split(',').map(s => s.trim()).filter(Boolean);
-  const keys = list(options['--keys']), permissions = list(options['--permissions']) ?? ['encrypt', 'decrypt'], tenantId = options['--tenant'];
-  if ((tenantId === undefined) !== (keys === undefined)) fail('Give both --tenant and --keys to emit a principal, or neither.');
+  const keys = list(options['--keys']), permissions = list(options['--permissions']) ?? ['encrypt', 'decrypt'];
+  if (keys?.length === 0) fail('--keys needs at least one key reference.');
   if (permissions.some(p => !['encrypt', 'decrypt'].includes(p)) || new Set(permissions).size !== permissions.length) fail('--permissions must be encrypt, decrypt or encrypt,decrypt.');
   const token = randomBytes(32).toString('base64url');
   await writeFile(file, token + '\n', { mode: 0o600, flag: 'wx' });
   const tokenSha256 = createHash('sha256').update(token).digest('hex');
-  return { tokenFile: resolve(file), tokenSha256, ...(tenantId ? { principal: { tokenSha256, tenantId, permissions, keys } } : {}),
+  return { tokenFile: resolve(file), tokenSha256, ...(keys ? { principal: { tokenSha256, permissions, keys } } : {}),
     next: 'Add the principal to STRONGROOM_CONFIG.principals; give the application STRONGROOM_TOKEN_FILE.' };
 }
 // Each failing step keeps the service error code, so exit codes and retryability stay meaningful.
@@ -114,7 +114,7 @@ async function main() {
   const booleans = ['--dry-run', '--delete-key', '--no-verify'];
   const allowed = command === 'setup' && schemaName === 'gcp' ? ['--name', '--tenant', '--key', '--project', '--location', '--keyring', '--service-account', '--protection-level', '--directory', '--dry-run', '--no-verify', '--output']
     : command === 'teardown' && schemaName === 'gcp' ? ['--name', '--key', '--project', '--location', '--keyring', '--service-account', '--delete-key', '--output']
-    : command === 'setup' ? ['--name', '--tenant', '--key', '--region', '--profile', '--role-name', '--directory', '--dry-run', '--no-verify', '--output'] : command === 'teardown' ? ['--name', '--region', '--profile', '--role-name', '--delete-key', '--output'] : command === 'init' ? ['--directory', '--output'] : command === 'token' ? ['--token-file', '--tenant', '--keys', '--permissions', '--output'] : command === 'probe' ? ['--key', '--tenant', '--record', '--output'] : command === 'decrypt' ? ['--input', '--output', '--envelope', '--plaintext-file'] : command === 'encrypt' ? ['--input', '--output', '--plaintext-file'] : command === 'config-check' ? ['--input', '--output'] : ['--output'];
+    : command === 'setup' ? ['--name', '--tenant', '--key', '--region', '--profile', '--role-name', '--directory', '--dry-run', '--no-verify', '--output'] : command === 'teardown' ? ['--name', '--region', '--profile', '--role-name', '--delete-key', '--output'] : command === 'init' ? ['--directory', '--output'] : command === 'token' ? ['--token-file', '--keys', '--permissions', '--output'] : command === 'probe' ? ['--key', '--tenant', '--record', '--output'] : command === 'decrypt' ? ['--input', '--output', '--envelope', '--plaintext-file'] : command === 'encrypt' ? ['--input', '--output', '--plaintext-file'] : command === 'config-check' ? ['--input', '--output'] : ['--output'];
   while (argv.length) {
     const flag = argv.shift()!;
     if (!allowed.includes(flag) || Object.hasOwn(options, flag)) fail('Unknown or repeated option. Run --help.');
@@ -138,7 +138,7 @@ async function main() {
       let c;
       try { c = parseConfig({ ...process.env, STRONGROOM_CONFIG: serialized }); }
       catch (error) { throw new StrongroomError('INVALID_CONFIG', error instanceof Error ? error.message : 'Configuration is invalid.', 0, false, undefined, error instanceof ConfigError ? error.path : undefined); }
-      result = { valid: true, keyCount: Object.keys(c.keys).length, principalCount: c.principals.length, providers: [...new Set(Object.values(c.keys).map(v => v.provider))] }; break;
+      result = { valid: true, tenantId: c.tenantId, keyCount: Object.keys(c.keys).length, principalCount: c.principals.length, providers: [...new Set(Object.values(c.keys).map(v => v.provider))] }; break;
     }
     case 'encrypt': case 'decrypt': case 'doctor': case 'probe': {
       let token = process.env.STRONGROOM_TOKEN;

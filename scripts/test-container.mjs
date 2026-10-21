@@ -3,7 +3,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { Strongroom } from '../packages/strongroom/src/client.ts';
 const token = randomBytes(32).toString('base64url');
-const config = { keys: { primary: { provider: 'local', kek: randomBytes(32).toString('base64url') } }, principals: [{ tokenSha256: createHash('sha256').update(token).digest('hex'), tenantId: 'test', permissions: ['encrypt', 'decrypt'], keys: ['primary'] }] };
+const config = { tenantId: 'test', keys: { primary: { provider: 'local', kek: randomBytes(32).toString('base64url') } }, principals: [{ tokenSha256: createHash('sha256').update(token).digest('hex'), permissions: ['encrypt', 'decrypt'], keys: ['primary'] }] };
 function docker(args, env = {}) {
   const r = spawnSync('docker', args, { encoding: 'utf8', env: { ...process.env, ...env } });
   if (r.status !== 0) throw new Error('Docker command failed; ensure the daemon is running and the test image exists.');

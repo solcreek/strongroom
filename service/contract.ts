@@ -1,5 +1,5 @@
 const context = { type: 'object', additionalProperties: false, required: ['tenantId', 'recordId', 'purpose'], properties: {
-  tenantId: { type: 'string', minLength: 1, maxLength: 256, description: 'Must match the authenticated principal; at most 256 UTF-8 bytes.' },
+  tenantId: { type: 'string', minLength: 1, maxLength: 256, description: 'Must equal the tenant this deployment serves; at most 256 UTF-8 bytes.' },
   recordId: { type: 'string', minLength: 1, maxLength: 256, description: 'At most 256 UTF-8 bytes.' },
   purpose: { type: 'string', minLength: 1, maxLength: 256, description: 'At most 256 UTF-8 bytes.' },
 } };
@@ -34,7 +34,7 @@ export const capabilities = {
     INVALID_REQUEST: { status: 400, retryable: false, action: 'Fix the field named by error.path; see schema.' },
     DECRYPT_FAILED: { status: 400, retryable: false, action: 'The envelope does not open with this context and key. Rebuild context from trusted identifiers; never overwrite the stored envelope.' },
     UNAUTHENTICATED: { status: 401, retryable: false, action: 'Supply a valid bearer token.' },
-    FORBIDDEN: { status: 403, retryable: false, action: 'The token lacks this tenant, operation or key reference.' },
+    FORBIDDEN: { status: 403, retryable: false, action: 'This deployment serves another tenant, or the token lacks this operation or key reference. Each tenant has its own deployment and URL.' },
     NOT_FOUND: { status: 404, retryable: false, action: 'Use a documented endpoint.' },
     METHOD_NOT_ALLOWED: { status: 405, retryable: false, action: 'Use the documented method.' },
     PLAINTEXT_NOT_TEXT: { status: 406, retryable: false, action: 'The envelope opened but holds bytes that are not UTF-8 text. Decrypt with Accept: application/octet-stream (SDK decryptBytes, CLI decrypt --plaintext-file FILE).' },

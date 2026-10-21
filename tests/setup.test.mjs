@@ -68,6 +68,8 @@ test('setup aws writes a valid private config, keeps the secret off stdout, and 
   assert.deepEqual(config.keys.vault, { provider: 'aws', region: 'us-east-1', keyId: arn, accessKeyId: 'AKIAFAKEFAKEFAKE0000', secretAccessKey: 'fake-secret-access-key-never-printed' });
   assert.ok(parseConfig({ STRONGROOM_CONFIG: JSON.stringify(config) }));
   assert.equal(config.principals[0].tokenSha256, summary.principal.tokenSha256);
+  // --tenant names the one tenant this deployment serves; principals carry none.
+  assert.equal(config.tenantId, 'acme'); assert.equal(summary.tenantId, 'acme'); assert.equal(Object.hasOwn(config.principals[0], 'tenantId'), false);
   for (const f of ['config.json', 'token']) assert.equal((await stat(join(out, f))).mode & 0o777, 0o600);
   assert.equal((await stat(out)).mode & 0o777, 0o700);
   const policy = JSON.parse(r.calls.find(c => c[1] === 'put-user-policy')[r.calls.find(c => c[1] === 'put-user-policy').indexOf('--policy-document') + 1]);

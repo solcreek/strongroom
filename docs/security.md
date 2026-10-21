@@ -4,11 +4,25 @@ Strongroom protects recoverable third-party credentials against a **database-onl
 
 The application and Strongroom handle plaintext at use time. Compromise of an application with decrypt permission, the running service, its credentials, or its memory can expose secrets. Managed KMS does not prevent an authorized or compromised caller from requesting decryption.
 
-The implementation uses RustCrypto AES-GCM, host CSPRNG entropy, authenticated metadata, tenant-bound principals and explicit grants. It has automated tests but has not received an independent cryptographic/security audit. Review your deployment and trust boundaries before protecting production credentials with it.
+The implementation uses RustCrypto AES-GCM, host CSPRNG entropy, authenticated metadata, single-tenant deployments and explicit grants. It has automated tests but has not received an independent cryptographic/security audit. Review your deployment and trust boundaries before protecting production credentials with it.
+
+## Tenant isolation
+
+One deployment serves exactly one tenant (`$.tenantId`); serving many tenants means one deployment per tenant. This is enforced by the configuration schema, not left to operators. Give each deployment its own KMS key and its own KMS identity, ideally in its own GCP project or AWS account.
+
+The reason is blast radius. A shared service whose identity can reach every tenant's keys exposes all of them when that identity, or the process holding it, is compromised. Giving each tenant its own key would add crypto-shredding but would not shrink that radius. Neither would credentials that Strongroom narrowed to one tenant per request, because Strongroom would still hold the right to mint any tenant's credential.
+
+| Threat | Shared deployment, per-tenant keys | One deployment per tenant |
+| --- | --- | --- |
+| Authorization bug in Strongroom crosses tenants | KMS allows it | No other tenant's key is reachable |
+| Strongroom process or its KMS credential compromised | Every tenant | That tenant only |
+| KMS quota contention (AWS: per account and Region; GCP: per key project) | Shared | Isolated with a project or account per tenant |
+
+`context.tenantId` must equal the deployment's tenant, and it stays in the AAD, so even a deployment miswired to another tenant's key cannot open that tenant's envelopes. This isolation pays off only if the caller does not collapse it again. An application that holds every tenant's Strongroom token in one process is the shared component, and its own isolation decides the outcome.
 
 ## Authorization
 
-A bearer token authorizes exactly one tenant, an explicit operation set, and explicit key references. Configuration stores a SHA-256 digest, not the raw bearer token. Generate at least 32 random bytes and encode as base64url. A digest is appropriate for these high-entropy random tokens; it is not appropriate for human passwords.
+A bearer token authorizes one deployment's tenant, an explicit operation set, and explicit key references. Configuration stores a SHA-256 digest, not the raw bearer token. Generate at least 32 random bytes and encode as base64url. A digest is appropriate for these high-entropy random tokens; it is not appropriate for human passwords.
 
 An application must still authorize which of its users may access a record. A principal allowed to decrypt for a tenant can decrypt any envelope for that tenant and granted key if it knows the original context. Record-level authorization is the application's responsibility. Use distinct principals for ingestion (`encrypt` only) and workloads that require decryption, where possible.
 

@@ -6,8 +6,9 @@ export type KeyConfig =
   | ({ provider: 'gcp'; keyId: string } & ({ serviceAccount: { clientEmail: string; privateKey: string } } |
       { authorizedUser: { clientId: string; clientSecret: string; refreshToken: string; quotaProject?: string } } | { metadataServer: true }))
   | { provider: 'vault' | 'openbao'; url: string; mount: string; keyName: string; token: string; namespace?: string };
-export interface Principal { tokenSha256: string; tenantId: string; permissions: ('encrypt' | 'decrypt')[]; keys: string[] }
-export interface Config { keys: Record<string, KeyConfig>; principals: Principal[] }
+export interface Principal { tokenSha256: string; permissions: ('encrypt' | 'decrypt')[]; keys: string[] }
+// One deployment serves exactly one tenant: multi-tenancy is one deployment per tenant, each with its own KMS key and identity.
+export interface Config { tenantId: string; keys: Record<string, KeyConfig>; principals: Principal[] }
 export interface Bindings {
   STRONGROOM_CONFIG?: string; STRONGROOM_ALLOW_LOCAL?: string;
   // Set by ECS/Fargate and EKS Pod Identity; read only for AWS keys with containerCredentials.
@@ -34,7 +35,8 @@ const gcpCredentials = ['serviceAccount', 'authorizedUser', 'metadataServer'];
 export function parseConfig(env: Bindings): Config {
   let config: unknown;
   try { config = JSON.parse(env.STRONGROOM_CONFIG ?? 'null'); } catch { throw new ConfigError('$', 'STRONGROOM_CONFIG must contain valid JSON.'); }
-  shape(config, '$', ['keys', 'principals']);
+  shape(config, '$', ['tenantId', 'keys', 'principals']);
+  check(text(config.tenantId, 256), '$.tenantId', 'must be 1-256 UTF-8 bytes: the one tenant this deployment serves.');
   check(object(config.keys) && Object.keys(config.keys).length > 0 && Object.keys(config.keys).length <= 100, '$.keys', 'must be an object with 1-100 key references.');
   for (const [alias, k] of Object.entries(config.keys as Record<string, unknown>)) {
     const at = `$.keys.${alias}`;
@@ -92,10 +94,10 @@ export function parseConfig(env: Bindings): Config {
   const hashes = new Set<string>();
   (config.principals as unknown[]).forEach((p, i) => {
     const at = `$.principals[${i}]`;
-    shape(p, at, ['tokenSha256', 'tenantId', 'permissions', 'keys']);
+    check(!object(p) || !Object.hasOwn(p, 'tenantId'), `${at}.tenantId`, 'principals no longer carry a tenant; one deployment serves one tenant, set in $.tenantId.');
+    shape(p, at, ['tokenSha256', 'permissions', 'keys']);
     check(text(p.tokenSha256) && /^[a-f0-9]{64}$/.test(p.tokenSha256), `${at}.tokenSha256`, 'must be the lowercase SHA-256 hex digest of the bearer token; generate one with: strongroom token --token-file FILE.');
     check(!hashes.has(p.tokenSha256 as string), `${at}.tokenSha256`, 'duplicates another principal.');
-    check(text(p.tenantId, 256), `${at}.tenantId`, 'must be 1-256 UTF-8 bytes.');
     check(Array.isArray(p.permissions) && p.permissions.length > 0 && p.permissions.every(v => ['encrypt', 'decrypt'].includes(v)), `${at}.permissions`, 'must be a non-empty subset of ["encrypt","decrypt"].');
     check(Array.isArray(p.keys) && p.keys.length > 0 && p.keys.every(v => typeof v === 'string' && Object.hasOwn(config.keys as object, v)), `${at}.keys`, 'must list only key references defined in $.keys.');
     hashes.add(p.tokenSha256 as string);

@@ -1,11 +1,13 @@
 # Strongroom on Cloud Run. KMS access comes from the runtime service account through the metadata
-# server (metadataServer), so STRONGROOM_CONFIG holds no secret: only key names, tenant IDs and token
-# digests. It is generated here and passed as a plain environment variable.
+# server (metadataServer), so STRONGROOM_CONFIG holds no secret: only key names, the tenant ID and token
+# digests. It is generated here and passed as a plain environment variable. One deployment serves one
+# tenant; apply this module once per tenant.
 
 locals {
   config = jsonencode({
+    tenantId   = var.tenant_id
     keys       = { for ref, id in var.kms_keys : ref => { provider = "gcp", keyId = id, metadataServer = true } }
-    principals = [for p in var.principals : { tokenSha256 = p.token_sha256, tenantId = p.tenant_id, permissions = p.permissions, keys = p.keys }]
+    principals = [for p in var.principals : { tokenSha256 = p.token_sha256, permissions = p.permissions, keys = p.keys }]
   })
 }
 

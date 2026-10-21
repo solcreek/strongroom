@@ -8,7 +8,7 @@ sequenceDiagram
   participant KMS as Managed KMS / Transit
   participant DB as Application DB
   App->>SR: encrypt(plaintext, context, key reference)
-  SR->>SR: Authenticate token; check tenant, operation, key
+  SR->>SR: Authenticate token; context tenant = deployment tenant; check operation, key
   SR->>Core: Fresh CSPRNG DEK + nonce; seal plaintext
   Core-->>SR: Ciphertext + canonical AAD
   SR->>KMS: Wrap 32-byte DEK with AAD
@@ -23,6 +23,8 @@ sequenceDiagram
   SR->>Core: Authenticate and decrypt ciphertext
   SR-->>App: Plaintext for immediate use
 ```
+
+Each deployment serves one tenant with its own KMS key and identity; many tenants means many deployments, and the caller routes each tenant to its deployment's URL and token ([security](security.md#tenant-isolation)).
 
 `crates/core` is the shared Rust library. Its internal JSON/Wasm bridge is **not a public API**: it accepts entropy and DEKs only from the trusted host. The HTTP layer rejects these fields. No POC module is imported by the service.
 
