@@ -19,7 +19,8 @@ test('SDK roundtrip against actual Rust Wasm and HTTP contract', async () => {
 test('SDK sends Uint8Array plaintext as bytes and decryptBytes returns a wipeable Uint8Array', async () => {
   const app = appWith(); const seen = [];
   const client = new Strongroom({ ...options, fetch: (url, init) => { seen.push(init); return app.fetch(new Request(url, init)); } });
-  const key = crypto.getRandomValues(new Uint8Array(32));
+  // 0xff is never valid UTF-8, so the text decrypt below always hits PLAINTEXT_NOT_TEXT.
+  const key = crypto.getRandomValues(new Uint8Array(32)); key[0] = 0xff;
   const envelope = await client.encrypt({ key: 'primary', context, plaintext: key });
   assert.deepEqual(Object.keys(JSON.parse(seen[0].body)).sort(), ['context', 'key', 'plaintextBase64url']);
   const opened = await client.decryptBytes({ envelope, context });
