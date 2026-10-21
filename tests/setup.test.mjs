@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCli } from './cli-helper.mjs';
 import { parseConfig } from '../service/config.ts';
-import { tenantName } from '../packages/strongroom/src/setup-common.ts';
+import { tenantName, tenantTag } from '../packages/strongroom/src/setup-common.ts';
 
 // A fake `aws` on PATH: answers from a scenario file and records every call, so setup runs offline and deterministically.
 const fake = `#!/usr/bin/env node
@@ -82,9 +82,10 @@ test('setup aws writes a valid private config, keeps the secret off stdout, and 
   assert.equal((await run([...base, '--directory', out, '--no-verify'], ok)).code, 2);
 });
 
-test('setup aws reuses an existing key and grants a role instead of creating a user', async t => {
+test('setup aws reuses this tenant\'s existing key and grants a role instead of creating a user', async t => {
   const { dir, run } = await harness(t);
-  const scenario = { ...ok, 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn, KeyState: 'Enabled', KeySpec: 'SYMMETRIC_DEFAULT', KeyUsage: 'ENCRYPT_DECRYPT' } } }, 'iam get-role': { stdout: { Role: {} } }, 'iam put-role-policy': { stdout: '' } };
+  const scenario = { ...ok, 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn, KeyState: 'Enabled', KeySpec: 'SYMMETRIC_DEFAULT', KeyUsage: 'ENCRYPT_DECRYPT' } } },
+    'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'strongroom-tenant', TagValue: tenantTag('acme') }] } }, 'iam get-role': { stdout: { Role: {} } }, 'iam put-role-policy': { stdout: '' } };
   const r = await run([...base, '--directory', join(dir, 'out'), '--role-name', 'task'], scenario);
   assert.equal(r.code, 0, r.stderr);
   assert.ok(!r.ops.includes('kms create-key') && !r.ops.includes('iam create-user'));
@@ -93,6 +94,11 @@ test('setup aws reuses an existing key and grants a role instead of creating a u
   assert.doesNotMatch(JSON.parse(r.stdout).teardown, /--delete-key/);
   const disabled = { ...scenario, 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn, KeyState: 'Disabled', KeySpec: 'SYMMETRIC_DEFAULT', KeyUsage: 'ENCRYPT_DECRYPT' } } } };
   assert.equal(JSON.parse((await run([...base, '--directory', join(dir, 'x'), '--role-name', 'task'], disabled)).stderr).error.code, 'KEY_UNUSABLE');
+  // An alias whose key is tagged for another tenant, or not tagged at all, is never reused: that would share a key across tenants.
+  for (const tags of [[{ TagKey: 'strongroom-tenant', TagValue: tenantTag('globex') }], [{ TagKey: 'app', TagValue: 'strongroom' }], []]) {
+    const foreign = await run([...base, '--directory', join(dir, `f${tags.length}${tags[0]?.TagKey ?? ''}`), '--role-name', 'task'], { ...scenario, 'kms list-resource-tags': { stdout: { Tags: tags } } });
+    assert.equal(foreign.code, 2); assert.equal(JSON.parse(foreign.stderr).error.code, 'NOT_OWNED'); assert.ok(!foreign.ops.includes('iam put-role-policy'));
+  }
 });
 
 test('setup aws failures carry a stable code, a next step and the resources created so far', async t => {
@@ -123,33 +129,47 @@ test('setup aws failures carry a stable code, a next step and the resources crea
 });
 
 test('resource names follow the tenant, so tenants can share an account without --name', async t => {
-  for (const [tenant, name] of [['acme', 'sr-acme'], ['Acme', /^sr-acme-[0-9a-f]{6}$/], ['ab', /^sr-ab-[0-9a-f]{6}$/], ['日本', /^sr-[0-9a-f]{6}$/], ['x'.repeat(40), /^sr-x{20}-[0-9a-f]{6}$/]]) {
+  for (const [tenant, name] of [['acme', /^sr-acme-[0-9a-f]{10}$/], ['Acme', /^sr-acme-[0-9a-f]{10}$/], ['ab', /^sr-ab-[0-9a-f]{10}$/], ['日本', /^sr-[0-9a-f]{10}$/], ['x'.repeat(40), /^sr-x{16}-[0-9a-f]{10}$/]]) {
     const derived = tenantName(tenant);
-    if (typeof name === 'string') assert.equal(derived, name); else assert.match(derived, name);
+    assert.match(derived, name);
     // Valid as a KMS alias and IAM user, and as a GCP key ring and service account id.
     assert.match(derived, /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/); assert.match(derived, /^[A-Za-z0-9_-]{1,32}$/);
   }
+  // Every name carries the hash, so a tenant id shaped like another tenant's derived name cannot claim it.
   assert.notEqual(tenantName('Acme'), tenantName('acme'));
+  assert.notEqual(tenantName('ab'), tenantName(tenantName('ab').slice(3)));
+  const acme = tenantName('acme');
   const { dir, run } = await harness(t);
   const setup = await run(['setup', 'aws', '--tenant', 'acme', '--region', 'us-east-1', '--directory', join(dir, 'acme'), '--dry-run'], ok);
-  assert.equal(setup.code, 0, setup.stderr);
-  assert.ok(setup.calls.some(c => c.includes('alias/sr-acme')) && setup.calls.some(c => c.includes('sr-acme') && c[1] === 'get-user'));
+  assert.equal(setup.code, 0, setup.stderr); assert.equal(JSON.parse(setup.stdout).name, acme);
+  assert.ok(setup.calls.some(c => c.includes(`alias/${acme}`)) && setup.calls.some(c => c.includes(acme) && c[1] === 'get-user'));
   // Teardown derives the same names from the tenant alone.
   const teardown = await run(['teardown', 'aws', '--tenant', 'acme', '--region', 'us-east-1'], ok);
-  assert.ok(teardown.calls.every(c => !c.includes('--user-name') || c.includes('sr-acme')));
-  assert.ok(teardown.calls.some(c => c.includes('sr-acme')));
+  assert.ok(teardown.calls.every(c => !c.includes('--user-name') || c.includes(acme)));
+  assert.ok(teardown.calls.some(c => c.includes(acme)));
 });
 
 test('teardown aws removes exactly what setup created and is idempotent', async t => {
   const { run } = await harness(t);
-  const present = { 'iam list-access-keys': { stdout: { AccessKeyMetadata: [{ AccessKeyId: 'AKIA1' }, { AccessKeyId: 'AKIA2' }] } }, 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn } } }, 'kms schedule-key-deletion': { stdout: { DeletionDate: '2026-10-20' } } };
+  const present = { 'iam list-user-tags': { stdout: { Tags: [{ Key: 'app', Value: 'strongroom' }, { Key: 'strongroom-tenant', Value: tenantTag('acme') }] } },
+    'iam list-access-keys': { stdout: { AccessKeyMetadata: [{ AccessKeyId: 'AKIA1' }, { AccessKeyId: 'AKIA2' }] } }, 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn } } },
+    'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'app', TagValue: 'strongroom' }, { TagKey: 'strongroom-tenant', TagValue: tenantTag('acme') }] } }, 'kms schedule-key-deletion': { stdout: { DeletionDate: '2026-10-20' } } };
   const r = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);
   assert.equal(r.code, 0, r.stderr);
-  assert.deepEqual(r.ops, ['iam list-access-keys', 'iam delete-access-key', 'iam delete-access-key', 'iam delete-user-policy', 'iam delete-user', 'kms describe-key', 'kms delete-alias', 'kms schedule-key-deletion']);
+  assert.deepEqual(r.ops, ['iam list-user-tags', 'iam list-access-keys', 'iam delete-access-key', 'iam delete-access-key', 'iam delete-user-policy', 'iam delete-user', 'kms describe-key', 'kms list-resource-tags', 'kms delete-alias', 'kms schedule-key-deletion']);
+  // Resources tagged for another tenant, or not created by setup, are refused before anything is deleted.
+  const mutating = ops => ops.filter(o => /delete|schedule/.test(o));
+  const foreignUser = await run(['teardown', 'aws', '--tenant', 'globex', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);
+  assert.equal(foreignUser.code, 2); assert.equal(JSON.parse(foreignUser.stderr).error.code, 'NOT_OWNED'); assert.deepEqual(mutating(foreignUser.ops), []);
+  const untagged = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1'], { ...present, 'iam list-user-tags': { stdout: { Tags: [] } } });
+  assert.equal(untagged.code, 2); assert.deepEqual(mutating(untagged.ops), []);
+  const foreignKey = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'],
+    { ...present, 'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'strongroom-tenant', TagValue: tenantTag('globex') }] } } });
+  assert.equal(foreignKey.code, 2); assert.ok(!foreignKey.ops.includes('kms schedule-key-deletion') && !foreignKey.ops.includes('kms delete-alias'));
   assert.ok(r.calls.find(c => c[1] === 'schedule-key-deletion').includes('7'));
   const kept = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1'], present);
   assert.ok(!kept.ops.some(o => o.startsWith('kms')) && JSON.parse(kept.stdout).keptKey);
-  const absent = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { 'iam list-access-keys': err('NoSuchEntity', 'ListAccessKeys'), 'kms describe-key': err('NotFoundException', 'DescribeKey') });
+  const absent = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': err('NotFoundException', 'DescribeKey') });
   assert.equal(absent.code, 0); assert.deepEqual(JSON.parse(absent.stdout).absent, ['iamUser', 'kmsKey']);
   const role = await run(['teardown', 'aws', '--name', 'sr-test', '--region', 'us-east-1', '--role-name', 'task'], {});
   assert.deepEqual(role.ops, ['iam delete-role-policy']);

@@ -12,17 +12,20 @@ export class SetupError extends StrongroomError {
   constructor(code: string, message: string, status: number, details: Record<string, unknown> = {}) { super(code, message, status); this.details = details; }
   toJSON() { return { ...super.toJSON(), ...this.details }; }
 }
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 // Default cloud resource names follow the tenant, so several tenants' deployments can share an account or
-// project without --name. The result fits both AWS (KMS alias, IAM user) and GCP (key ring, service account:
-// ^[a-z][a-z0-9-]{4,28}[a-z0-9]$). A tenant that is not already such a name gets a hash suffix, so "Acme"
-// and "acme" cannot collide; setup still refuses an existing identity if two names ever met.
+// project without --name. Always readable slug + hash: a plain form would share a namespace with the hashed
+// one ("ab" vs "ab-fb8e20"), letting a chosen tenant id land on another tenant's name. 40 bits of hash keep
+// accidental collisions negligible; ownership tags (tenantTag) catch the rest. The result fits both AWS
+// (KMS alias, IAM user) and GCP (key ring, service account: ^[a-z][a-z0-9-]{4,28}[a-z0-9]$).
 export function tenantName(tenantId: string): string {
-  const slug = tenantId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  const plain = `sr-${slug}`;
-  if (slug === tenantId && /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(plain)) return plain;
-  const head = slug.slice(0, 20).replace(/-+$/, '');
-  return `sr-${head}${head ? '-' : ''}${createHash('sha256').update(tenantId).digest('hex').slice(0, 6)}`;
+  const head = tenantId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 16).replace(/-+$/, '');
+  return `sr-${head}${head ? '-' : ''}${sha256(tenantId).slice(0, 10)}`;
 }
+// Written on every resource setup creates (AWS tag, GCP label, service account description) and checked
+// before setup reuses or teardown removes one, so a name that points at another tenant's resource is refused
+// rather than shared or destroyed. A hash, because tag and label values cannot hold arbitrary tenant ids.
+export const tenantTag = (tenantId: string) => sha256(tenantId).slice(0, 32);
 // --name wins; otherwise the name follows --tenant. Teardown accepts either, so an agent can undo a setup
 // knowing only the tenant.
 export function resourceName(options: Record<string, string>, command: string): string {

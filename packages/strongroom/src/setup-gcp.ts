@@ -4,14 +4,14 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName } from './setup-common.ts';
+import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName, tenantTag } from './setup-common.ts';
 
 const role = 'roles/cloudkms.cryptoKeyEncrypterDecrypter';
 // IAM permissions the operator needs; roles/cloudkms.admin plus roles/iam.serviceAccountAdmin and serviceAccountKeyAdmin cover them.
 export const requiredGcpPermissions = {
   serviceAccountKey: ['resourcemanager.projects.get', 'serviceusage.services.list', 'serviceusage.services.enable', 'cloudkms.keyRings.get', 'cloudkms.keyRings.create', 'cloudkms.cryptoKeys.get', 'cloudkms.cryptoKeys.create', 'cloudkms.cryptoKeys.getIamPolicy', 'cloudkms.cryptoKeys.setIamPolicy', 'iam.serviceAccounts.list', 'iam.serviceAccounts.create', 'iam.serviceAccountKeys.create'],
   workload: ['resourcemanager.projects.get', 'serviceusage.services.list', 'serviceusage.services.enable', 'cloudkms.keyRings.get', 'cloudkms.keyRings.create', 'cloudkms.cryptoKeys.get', 'cloudkms.cryptoKeys.create', 'cloudkms.cryptoKeys.getIamPolicy', 'cloudkms.cryptoKeys.setIamPolicy', 'iam.serviceAccounts.list'],
-  teardown: ['cloudkms.cryptoKeys.getIamPolicy', 'cloudkms.cryptoKeys.setIamPolicy', 'iam.serviceAccounts.list', 'iam.serviceAccounts.delete', 'cloudkms.cryptoKeyVersions.list', 'cloudkms.cryptoKeyVersions.destroy'],
+  teardown: ['cloudkms.cryptoKeys.get', 'cloudkms.cryptoKeys.getIamPolicy', 'cloudkms.cryptoKeys.setIamPolicy', 'iam.serviceAccounts.list', 'iam.serviceAccounts.delete', 'cloudkms.cryptoKeyVersions.list', 'cloudkms.cryptoKeyVersions.destroy'],
 };
 type Gcloud = (args: string[]) => Promise<any>;
 
@@ -95,6 +95,9 @@ export async function setupGcp(options: Record<string, string>) {
   const existing = ringExists ? await gcloud(['kms', 'keys', 'describe', keyRef, ...ring]).catch(e => { if (notFound(e)) return undefined; throw e; }) : undefined;
   if (existing && (existing.purpose !== 'ENCRYPT_DECRYPT' || existing.primary?.state !== 'ENABLED'))
     throw new SetupError('KEY_UNUSABLE', `${existing.name} exists but is not an ENCRYPT_DECRYPT key with an enabled primary version.`, 0, { keyId: existing.name, next: 'Choose another --key.' });
+  // Reuse only this tenant's own key: granting a second tenant's identity on it would share the key.
+  if (existing && existing.labels?.['strongroom-tenant'] !== tenantTag(tenantId))
+    throw new SetupError('NOT_OWNED', `${existing.name} exists but is not labelled as this tenant's key; setup never reuses another tenant's key.`, 0, { keyId: existing.name, next: 'Choose another --name or --key, or omit --name to use the name derived from --tenant.' });
   const email = workload ?? `${name}@${p}.iam.gserviceaccount.com`;
   // A workload account may live in another project (a central key project); then the IAM binding itself validates it.
   const saExists = !workload || email.endsWith(`@${p}.iam.gserviceaccount.com`) ? await accountExists(gcloud, email) : true;
@@ -111,7 +114,7 @@ export async function setupGcp(options: Record<string, string>) {
     { action: 'write-files', directory, files: ['config.json', 'token'] },
     workload ? { action: 'verify', skipped: 'workload credentials exist only on Cloud Run/GKE' } : { action: 'verify', detail: 'real encrypt/decrypt with the new key file' },
   ];
-  const base = { project: p, caller: account || null, location, plan, requiredPermissions: workload ? requiredGcpPermissions.workload : requiredGcpPermissions.serviceAccountKey };
+  const base = { name, directory, project: p, caller: account || null, location, plan, requiredPermissions: workload ? requiredGcpPermissions.workload : requiredGcpPermissions.serviceAccountKey };
   if (dryRun) return { dryRun: true, ...base, next: 'Run the same command without --dry-run to apply.' };
 
   const created: Record<string, string>[] = [];
@@ -119,8 +122,9 @@ export async function setupGcp(options: Record<string, string>) {
   try {
     if (!apiEnabled) { await gcloud(['services', 'enable', 'cloudkms.googleapis.com']); created.push({ enabledApi: 'cloudkms.googleapis.com' }); }
     if (!ringExists) { await gcloud(['kms', 'keyrings', 'create', keyRing, ...loc]); created.push({ keyRing }); }
-    if (!existing) { await gcloud(['kms', 'keys', 'create', keyRef, ...ring, '--purpose', 'encryption', '--protection-level', protection, '--destroy-scheduled-duration', destroyAfter, '--labels', 'app=strongroom']); created.push({ cryptoKey: keyId }); }
-    if (!workload) { await gcloud(['iam', 'service-accounts', 'create', name, '--display-name', `Strongroom (${name})`]); created.push({ serviceAccount: email }); }
+    if (!existing) { await gcloud(['kms', 'keys', 'create', keyRef, ...ring, '--purpose', 'encryption', '--protection-level', protection, '--destroy-scheduled-duration', destroyAfter, '--labels', `app=strongroom,strongroom-tenant=${tenantTag(tenantId)}`]); created.push({ cryptoKey: keyId }); }
+    // Service accounts take no labels; the description carries the same ownership marker for teardown.
+    if (!workload) { await gcloud(['iam', 'service-accounts', 'create', name, '--display-name', `Strongroom (${name})`, '--description', `strongroom-tenant=${tenantTag(tenantId)}`]); created.push({ serviceAccount: email }); }
     await propagated(() => gcloud(['kms', 'keys', 'add-iam-policy-binding', keyRef, ...ring, '--member', `serviceAccount:${email}`, '--role', role])); created.push({ keyBinding: email });
     let key: Record<string, unknown> = { provider: 'gcp', keyId, metadataServer: true };
     if (!workload) {
@@ -149,17 +153,28 @@ export async function teardownGcp(options: Record<string, string>) {
   const { name, keyRing, keyRef, location, workload } = inputs(options, 'teardown gcp');
   const p = await project(options), gcloud = cli(p), ring = ['--location', location, '--keyring', keyRing];
   const email = workload ?? `${name}@${p}.iam.gserviceaccount.com`, removed: Record<string, string>[] = [], absent: string[] = [];
+  const deleteKey = options['--delete-key'] === 'true', tenant = options['--tenant'];
+  // Check ownership of everything before changing anything: with --tenant the marker setup wrote must match;
+  // with only --name, the resource must at least be one setup created.
+  const marker = tenant ? `strongroom-tenant=${tenantTag(tenant)}` : 'strongroom-tenant=';
+  const refuse = (what: string) => new SetupError('NOT_OWNED', `${what} was not created by setup${tenant ? ' for this tenant' : ''}; teardown changed nothing.`, 0, { resource: what, next: 'Check --tenant or --name.' });
+  const account = workload ? undefined : (await gcloud(['iam', 'service-accounts', 'list', `--filter=email=${email}`]))[0];
+  if (account && !String(account.description ?? '').startsWith(marker)) throw refuse(`Service account ${email}`);
+  if (deleteKey) {
+    const key = await gcloud(['kms', 'keys', 'describe', keyRef, ...ring]).catch(e => { if (notFound(e)) return undefined; throw e; });
+    if (key && !(tenant ? key.labels?.['strongroom-tenant'] === tenantTag(tenant) : key.labels?.app === 'strongroom')) throw refuse(`CryptoKey ${keyRef}`);
+  }
   const binding = await gcloud(['kms', 'keys', 'remove-iam-policy-binding', keyRef, ...ring, '--member', `serviceAccount:${email}`, '--role', role])
     .then(() => true, e => { if (notFound(e) || (e instanceof SetupError && e.code === 'GCP_ERROR' && !e.details.gcpCode)) return false; throw e; });
   if (binding) removed.push({ keyBinding: email }); else absent.push('keyBinding');
   if (!workload) {
-    if (await accountExists(gcloud, email)) {
+    if (account) {
       await gcloud(['iam', 'service-accounts', 'delete', email]); removed.push({ serviceAccount: email });
     } else absent.push('serviceAccount');
   }
   // Destroying every version makes all envelopes wrapped by the key unrecoverable. (A destroyed key could then be
   // deleted, but a deleted CryptoKey name can never be reused, so teardown keeps the key and its name.)
-  if (options['--delete-key'] === 'true') {
+  if (deleteKey) {
     const versions = await gcloud(['kms', 'keys', 'versions', 'list', '--key', keyRef, ...ring, '--filter=state=ENABLED OR state=DISABLED']).catch(e => { if (notFound(e)) return undefined; throw e; });
     if (!versions) absent.push('cryptoKey');
     for (const v of versions ?? []) {
@@ -167,6 +182,6 @@ export async function teardownGcp(options: Record<string, string>) {
       removed.push({ cryptoKeyVersionScheduledForDestruction: v.name, destroyTime: r.destroyTime });
     }
   }
-  return { removed, absent, keptKey: options['--delete-key'] !== 'true',
-    note: options['--delete-key'] === 'true' ? 'Decrypts fail now. Each version becomes unrecoverable at its destroyTime (the key\'s destroy-scheduled duration, 7 days when setup created it); until then gcloud kms keys versions restore undoes it. Key material can take up to 45 more days to leave Google\'s backups.' : 'The CryptoKey was kept; pass --delete-key to schedule destruction of its versions.' };
+  return { removed, absent, keptKey: !deleteKey,
+    note: deleteKey ? 'Decrypts fail now. Each version becomes unrecoverable at its destroyTime (the key\'s destroy-scheduled duration, 7 days when setup created it); until then gcloud kms keys versions restore undoes it. Key material can take up to 45 more days to leave Google\'s backups.' : 'The CryptoKey was kept; pass --delete-key to schedule destruction of its versions.' };
 }

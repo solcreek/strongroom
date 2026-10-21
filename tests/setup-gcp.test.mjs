@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import { runCli } from './cli-helper.mjs';
 import { parseConfig } from '../service/config.ts';
+import { tenantName, tenantTag } from '../packages/strongroom/src/setup-common.ts';
 
 // A stateful fake `gcloud`: a scenario maps a command to one response or a queue of responses, and every call is logged.
 const fake = `#!/usr/bin/env node
@@ -85,9 +86,9 @@ test('setup gcp writes a service-account config, deletes the key file, and retri
   assert.match(summary.teardown, /--delete-key/); assert.ok(summary.next.some(n => n.includes('strongroom probe --key primary')));
 });
 
-test('setup gcp grants an existing workload identity and reuses an enabled key', async t => {
+test('setup gcp grants an existing workload identity and reuses this tenant\'s enabled key', async t => {
   const { dir, run } = await harness(t);
-  const existing = { ...ok, 'kms keyrings describe': { stdout: {} }, 'kms keys describe': { stdout: { name: key, purpose: 'ENCRYPT_DECRYPT', primary: { state: 'ENABLED' } } } };
+  const existing = { ...ok, 'kms keyrings describe': { stdout: {} }, 'kms keys describe': { stdout: { name: key, purpose: 'ENCRYPT_DECRYPT', primary: { state: 'ENABLED' }, labels: { app: 'strongroom', 'strongroom-tenant': tenantTag('acme') } } } };
   const r = await run([...base, '--directory', join(dir, 'w'), '--service-account', 'run@other-project.iam.gserviceaccount.com'], existing);
   assert.equal(r.code, 0, r.stderr);
   assert.ok(!r.ops.some(o => /keyrings create|keys create|service-accounts create|service-accounts list/.test(o)), r.ops.join());
@@ -95,6 +96,12 @@ test('setup gcp grants an existing workload identity and reuses an enabled key',
   assert.doesNotMatch(JSON.parse(r.stdout).teardown, /--delete-key/);
   const destroyed = { ...existing, 'kms keys describe': { stdout: { name: key, purpose: 'ENCRYPT_DECRYPT', primary: { state: 'DESTROY_SCHEDULED' } } } };
   assert.equal(JSON.parse((await run([...base, '--directory', join(dir, 'x')], destroyed)).stderr).error.code, 'KEY_UNUSABLE');
+  // A key labelled for another tenant, or not created by setup, is never reused: that would share it across tenants.
+  for (const labels of [{ app: 'strongroom', 'strongroom-tenant': tenantTag('globex') }, { app: 'strongroom' }, undefined]) {
+    const foreign = await run([...base, '--directory', join(dir, `f${Object.keys(labels ?? {}).length}`), '--service-account', 'run@other-project.iam.gserviceaccount.com'],
+      { ...existing, 'kms keys describe': { stdout: { name: key, purpose: 'ENCRYPT_DECRYPT', primary: { state: 'ENABLED' }, labels } } });
+    assert.equal(foreign.code, 2); assert.equal(JSON.parse(foreign.stderr).error.code, 'NOT_OWNED'); assert.ok(!foreign.ops.some(o => /add-iam/.test(o)));
+  }
   const sameProject = await run([...base, '--directory', join(dir, 'y'), '--service-account', 'gone@demo-project.iam.gserviceaccount.com'], existing);
   assert.equal(JSON.parse(sameProject.stderr).error.path, '--service-account');
 });
@@ -128,16 +135,26 @@ test('setup gcp failures carry stable codes, next steps and created resources', 
 
 test('teardown gcp removes the grant and account, destroys versions only on request, and is idempotent', async t => {
   const { run } = await harness(t);
-  const present = { 'iam service-accounts list': { stdout: [{ email }] }, 'kms keys versions list': { stdout: [{ name: `${key}/cryptoKeyVersions/1` }, { name: `${key}/cryptoKeyVersions/2` }] }, 'kms keys versions destroy': { stdout: { destroyTime: '2026-11-13T00:00:00Z' } } };
+  const present = { 'iam service-accounts list': { stdout: [{ email, description: `strongroom-tenant=${tenantTag('acme')}` }] },
+    'kms keys describe': { stdout: { name: key, labels: { app: 'strongroom', 'strongroom-tenant': tenantTag('acme') } } },
+    'kms keys versions list': { stdout: [{ name: `${key}/cryptoKeyVersions/1` }, { name: `${key}/cryptoKeyVersions/2` }] }, 'kms keys versions destroy': { stdout: { destroyTime: '2026-11-13T00:00:00Z' } } };
   const td = ['teardown', 'gcp', '--name', 'sr-test', '--keyring', 'sr-ring', '--project', 'demo-project'];
   const r = await run([...td, '--delete-key'], present);
   assert.equal(r.code, 0, r.stderr);
   const kinds = r.calls.map(c => c.slice(0, 3).join(' '));
-  assert.deepEqual(kinds, ['kms keys remove-iam-policy-binding', 'iam service-accounts list', 'iam service-accounts delete', 'kms keys versions', 'kms keys versions', 'kms keys versions']);
+  // Ownership is checked first; nothing changes until both the account and the key are confirmed.
+  assert.deepEqual(kinds, ['iam service-accounts list', 'kms keys describe', 'kms keys remove-iam-policy-binding', 'iam service-accounts delete', 'kms keys versions', 'kms keys versions', 'kms keys versions']);
+  const mutating = calls => calls.filter(c => /remove-iam|delete|destroy/.test(c.slice(0, 4).join(' ')));
+  const foreignAccount = await run([...td, '--tenant', 'globex', '--delete-key'], present);
+  assert.equal(foreignAccount.code, 2); assert.equal(JSON.parse(foreignAccount.stderr).error.code, 'NOT_OWNED'); assert.deepEqual(mutating(foreignAccount.calls), []);
+  const foreignKey = await run([...td, '--tenant', 'acme', '--delete-key'], { ...present, 'kms keys describe': { stdout: { name: key, labels: { app: 'strongroom', 'strongroom-tenant': tenantTag('globex') } } } });
+  assert.equal(foreignKey.code, 2); assert.deepEqual(mutating(foreignKey.calls), []);
+  const unmarked = await run(td, { ...present, 'iam service-accounts list': { stdout: [{ email, description: 'someone else' }] } });
+  assert.equal(unmarked.code, 2); assert.deepEqual(mutating(unmarked.calls), []);
   assert.deepEqual(r.calls.filter(c => c[3] === 'destroy').map(c => c[4]), ['1', '2']);
   const kept = await run(td, present);
   assert.ok(!kept.calls.some(c => c[2] === 'versions') && JSON.parse(kept.stdout).keptKey);
-  const absent = await run([...td, '--delete-key'], { 'kms keys remove-iam-policy-binding': { stderr: 'ERROR: Policy binding with the specified principal, role, and condition not found!\n' }, 'iam service-accounts list': { stdout: [] }, 'kms keys versions list': err('NOT_FOUND', 'kms.keys.versions.list') });
+  const absent = await run([...td, '--delete-key'], { 'kms keys remove-iam-policy-binding': { stderr: 'ERROR: Policy binding with the specified principal, role, and condition not found!\n' }, 'iam service-accounts list': { stdout: [] }, 'kms keys describe': err('NOT_FOUND', 'kms.keys.describe'), 'kms keys versions list': err('NOT_FOUND', 'kms.keys.versions.list') });
   assert.equal(absent.code, 0, absent.stderr); assert.deepEqual(JSON.parse(absent.stdout).absent, ['keyBinding', 'serviceAccount', 'cryptoKey']);
   const workload = await run([...td, '--service-account', 'run@other.iam.gserviceaccount.com'], {});
   assert.deepEqual(workload.calls.map(c => c[2]), ['remove-iam-policy-binding']);
@@ -147,11 +164,15 @@ test('setup gcp names resources after the tenant and fixes the destroy-scheduled
   // No --name or --keyring: both follow the tenant, so a second tenant in the same project does not collide.
   const r = await run(['setup', 'gcp', '--tenant', 'acme', '--project', 'demo-project', '--directory', join(dir, 'acme'), '--no-verify'], ok);
   assert.equal(r.code, 0, r.stderr);
+  const acme = tenantName('acme');
   const created = r.calls.find(c => c[0] === 'kms' && c[1] === 'keys' && c[2] === 'create');
-  assert.equal(created[created.indexOf('--keyring') + 1], 'sr-acme');
+  assert.equal(created[created.indexOf('--keyring') + 1], acme);
   assert.equal(created[created.indexOf('--destroy-scheduled-duration') + 1], '7d');
-  assert.ok(r.calls.some(c => c[1] === 'service-accounts' && c[2] === 'create' && c[3] === 'sr-acme'));
-  assert.equal(JSON.parse(r.stdout).identity.serviceAccount, 'sr-acme@demo-project.iam.gserviceaccount.com');
+  // Both resources carry the tenant's ownership marker, which later reuse and teardown check.
+  assert.equal(created[created.indexOf('--labels') + 1], `app=strongroom,strongroom-tenant=${tenantTag('acme')}`);
+  const account = r.calls.find(c => c[1] === 'service-accounts' && c[2] === 'create');
+  assert.equal(account[3], acme); assert.equal(account[account.indexOf('--description') + 1], `strongroom-tenant=${tenantTag('acme')}`);
+  assert.equal(JSON.parse(r.stdout).identity.serviceAccount, `${acme}@demo-project.iam.gserviceaccount.com`);
   const custom = await run([...base, '--directory', join(dir, 'custom'), '--no-verify', '--destroy-scheduled-duration', '30d'], ok);
   const createdCustom = custom.calls.find(c => c[0] === 'kms' && c[1] === 'keys' && c[2] === 'create');
   assert.equal(createdCustom[createdCustom.indexOf('--destroy-scheduled-duration') + 1], '30d');
@@ -164,7 +185,7 @@ test('setup gcp names resources after the tenant and fixes the destroy-scheduled
   const td = await run(['teardown', 'gcp', '--tenant', 'acme', '--project', 'demo-project'], { 'iam service-accounts list': { stdout: [] } });
   assert.equal(td.code, 0, td.stderr);
   const unbound = td.calls.find(c => c[2] === 'remove-iam-policy-binding');
-  assert.equal(unbound[unbound.indexOf('--keyring') + 1], 'sr-acme'); assert.ok(unbound.includes('serviceAccount:sr-acme@demo-project.iam.gserviceaccount.com'));
+  assert.equal(unbound[unbound.indexOf('--keyring') + 1], acme); assert.ok(unbound.includes(`serviceAccount:${acme}@demo-project.iam.gserviceaccount.com`));
   const neither = await run(['teardown', 'gcp', '--project', 'demo-project'], ok);
   assert.equal(neither.code, 2); assert.equal(JSON.parse(neither.stderr).error.path, '--tenant');
 });

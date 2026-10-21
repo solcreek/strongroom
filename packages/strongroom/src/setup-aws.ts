@@ -3,14 +3,14 @@
 // stable error codes with a `next` command, `created` resources on partial failure, and an exact inverse.
 import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
-import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName } from './setup-common.ts';
+import { SetupError, assertNewDirectory, writeSetup, nextSteps, verifyKey, resourceName, tenantTag } from './setup-common.ts';
 export { SetupError } from './setup-common.ts';
 
 // What the operator running setup needs; printed by --dry-run and on AWS_PERMISSION_DENIED.
 export const requiredPermissions = {
-  user: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetUser', 'iam:CreateUser', 'iam:TagUser', 'iam:PutUserPolicy', 'iam:CreateAccessKey'],
-  role: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetRole', 'iam:PutRolePolicy'],
-  teardown: ['iam:ListAccessKeys', 'iam:DeleteAccessKey', 'iam:DeleteUserPolicy', 'iam:DeleteUser', 'iam:DeleteRolePolicy', 'kms:DescribeKey', 'kms:DeleteAlias', 'kms:ScheduleKeyDeletion'],
+  user: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetUser', 'iam:CreateUser', 'iam:TagUser', 'iam:PutUserPolicy', 'iam:CreateAccessKey'],
+  role: ['sts:GetCallerIdentity', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:CreateKey', 'kms:CreateAlias', 'kms:TagResource', 'iam:GetRole', 'iam:PutRolePolicy'],
+  teardown: ['iam:ListUserTags', 'iam:ListAccessKeys', 'iam:DeleteAccessKey', 'iam:DeleteUserPolicy', 'iam:DeleteUser', 'iam:DeleteRolePolicy', 'kms:DescribeKey', 'kms:ListResourceTags', 'kms:DeleteAlias', 'kms:ScheduleKeyDeletion'],
 };
 // Same grant as deploy/terraform/aws-ecs-express: the key only, and only with Strongroom's encryption context.
 export function kmsPolicy(keyArn: string) {
@@ -64,6 +64,10 @@ export async function setupAws(options: Record<string, string>) {
     const m = existing.KeyMetadata;
     if (m.KeyState !== 'Enabled' || m.KeySpec !== 'SYMMETRIC_DEFAULT' || m.KeyUsage !== 'ENCRYPT_DECRYPT')
       throw new SetupError('KEY_UNUSABLE', `${alias} exists but is not an enabled symmetric ENCRYPT_DECRYPT key.`, 0, { keyArn: m.Arn, keyState: m.KeyState, next: 'Choose another --name.' });
+    // Reuse only this tenant's own key: an alias that resolves to another tenant's key would share it.
+    const tags: { TagKey: string; TagValue: string }[] = (await aws(['kms', 'list-resource-tags', '--key-id', m.Arn])).Tags ?? [];
+    if (!tags.some(t => t.TagKey === 'strongroom-tenant' && t.TagValue === tenantTag(tenantId)))
+      throw new SetupError('NOT_OWNED', `${alias} exists but is not tagged as this tenant's key; setup never reuses another tenant's key.`, 0, { keyArn: m.Arn, next: 'Choose another --name, or omit it to use the name derived from --tenant.' });
   }
   if (o.role) await aws(['iam', 'get-role', '--role-name', o.role]).catch(e => { throw notFound(e) ? new SetupError('INVALID_INPUT', `IAM role ${o.role} does not exist.`, 0, { path: '--role-name' }) : e; });
   else if (await aws(['iam', 'get-user', '--user-name', name]).then(() => true, e => { if (notFound(e)) return false; throw e; }))
@@ -74,13 +78,13 @@ export async function setupAws(options: Record<string, string>) {
     { action: 'write-files', directory, files: ['config.json', 'token'] },
     o.role ? { action: 'verify', skipped: 'role credentials are only available inside the workload' } : { action: 'verify', detail: 'real Encrypt/Decrypt with the new credentials' },
   ];
-  const base = { account: identity.Account, caller: identity.Arn, region: o.region, plan, requiredPermissions: o.role ? requiredPermissions.role : requiredPermissions.user };
+  const base = { name, directory, account: identity.Account, caller: identity.Arn, region: o.region, plan, requiredPermissions: o.role ? requiredPermissions.role : requiredPermissions.user };
   if (dryRun) return { dryRun: true, ...base, next: `Run the same command without --dry-run to apply.` };
 
   const created: Record<string, string>[] = [];
   const cleanup = `strongroom teardown aws --name ${name}${o.role ? ` --role-name ${o.role}` : ''}${existing ? '' : ' --delete-key'} --region ${o.region}${o.profile ? ` --profile ${o.profile}` : ''}`;
   try {
-    const tags = ['--tags', 'TagKey=app,TagValue=strongroom', `TagKey=strongroom-name,TagValue=${name}`];
+    const tags = ['--tags', 'TagKey=app,TagValue=strongroom', `TagKey=strongroom-name,TagValue=${name}`, `TagKey=strongroom-tenant,TagValue=${tenantTag(tenantId)}`];
     let keyArn: string = existing?.KeyMetadata.Arn;
     if (!keyArn) {
       keyArn = (await aws(['kms', 'create-key', '--description', `Strongroom envelope key (${name})`, '--key-spec', 'SYMMETRIC_DEFAULT', '--key-usage', 'ENCRYPT_DECRYPT', ...tags])).KeyMetadata.Arn;
@@ -93,7 +97,7 @@ export async function setupAws(options: Record<string, string>) {
       await aws(['iam', 'put-role-policy', '--role-name', o.role, '--policy-name', 'strongroom-kms', '--policy-document', policy]); created.push({ rolePolicy: `${o.role}/strongroom-kms` });
       key = { provider: 'aws', region: o.region, keyId: keyArn, containerCredentials: true };
     } else {
-      await aws(['iam', 'create-user', '--user-name', name, '--tags', 'Key=app,Value=strongroom']); created.push({ iamUser: name });
+      await aws(['iam', 'create-user', '--user-name', name, '--tags', 'Key=app,Value=strongroom', `Key=strongroom-tenant,Value=${tenantTag(tenantId)}`]); created.push({ iamUser: name });
       await aws(['iam', 'put-user-policy', '--user-name', name, '--policy-name', 'strongroom-kms', '--policy-document', policy]);
       const access = (await aws(['iam', 'create-access-key', '--user-name', name])).AccessKey;
       created.push({ accessKeyId: access.AccessKeyId });
@@ -116,10 +120,19 @@ export async function teardownAws(options: Record<string, string>) {
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) throw new SetupError('INVALID_INPUT', '--name must match ^[A-Za-z0-9_-]{1,32}$.', 0, { path: '--name' });
   const aws = cli(o), removed: Record<string, string>[] = [], absent: string[] = [];
   const gone = (what: string) => (e: unknown) => { if (notFound(e)) { absent.push(what); return undefined; } throw e; };
+  // Remove only what setup created for this tenant: with --tenant, its ownership tag must match; with only
+  // --name, the resource must at least carry setup's app=strongroom tag.
+  const tenant = options['--tenant'];
+  const owned = (tags: { key: string; value: string }[], what: string) => {
+    const ok = tenant ? tags.some(t => t.key === 'strongroom-tenant' && t.value === tenantTag(tenant)) : tags.some(t => t.key === 'app' && t.value === 'strongroom');
+    if (!ok) throw new SetupError('NOT_OWNED', `${what} was not created by setup${tenant ? ' for this tenant' : ''}; teardown leaves it alone.`, 0, { resource: what, next: 'Check --tenant or --name; nothing was removed for this resource.' });
+  };
   if (role) {
     if (await aws(['iam', 'delete-role-policy', '--role-name', role, '--policy-name', 'strongroom-kms']).catch(gone('rolePolicy')) !== undefined) removed.push({ rolePolicy: `${role}/strongroom-kms` });
   } else {
-    const keys = await aws(['iam', 'list-access-keys', '--user-name', name]).catch(gone('iamUser'));
+    const userTags = await aws(['iam', 'list-user-tags', '--user-name', name]).catch(gone('iamUser'));
+    if (userTags) owned((userTags.Tags ?? []).map((t: { Key: string; Value: string }) => ({ key: t.Key, value: t.Value })), `IAM user ${name}`);
+    const keys = userTags && await aws(['iam', 'list-access-keys', '--user-name', name]).catch(gone('iamUser'));
     if (keys) {
       for (const k of keys.AccessKeyMetadata) { await aws(['iam', 'delete-access-key', '--user-name', name, '--access-key-id', k.AccessKeyId]); removed.push({ accessKeyId: k.AccessKeyId }); }
       await aws(['iam', 'delete-user-policy', '--user-name', name, '--policy-name', 'strongroom-kms']).catch(gone('userPolicy'));
@@ -130,6 +143,8 @@ export async function teardownAws(options: Record<string, string>) {
   if (options['--delete-key'] === 'true') {
     const key = await aws(['kms', 'describe-key', '--key-id', `alias/${name}`]).catch(gone('kmsKey'));
     if (key) {
+      const keyTags = (await aws(['kms', 'list-resource-tags', '--key-id', key.KeyMetadata.Arn])).Tags ?? [];
+      owned(keyTags.map((t: { TagKey: string; TagValue: string }) => ({ key: t.TagKey, value: t.TagValue })), `KMS key alias/${name}`);
       await aws(['kms', 'delete-alias', '--alias-name', `alias/${name}`]); removed.push({ alias: `alias/${name}` });
       const r = await aws(['kms', 'schedule-key-deletion', '--key-id', key.KeyMetadata.Arn, '--pending-window-in-days', '7']);
       removed.push({ kmsKeyScheduledForDeletion: key.KeyMetadata.Arn, deletionDate: r.DeletionDate });
