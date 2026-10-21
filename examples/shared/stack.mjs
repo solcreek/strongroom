@@ -26,6 +26,8 @@ export async function startDeployment(tenantId, { kek = random() } = {}) {
     { tokenSha256: sha256(tokens.both), permissions: ['encrypt', 'decrypt'], keys: ['primary'] },
   ] };
   const port = await freePort();
+  // Never leave a deployment running after the example ends, even when it ends with an uncaught error.
+  process.once('exit', () => { if (child.exitCode === null) child.kill('SIGTERM'); });
   // Pin HOST as well as PORT: an inherited HOST would bind elsewhere while the probe below waits on 127.0.0.1.
   const child = spawn(process.execPath, [server], { stdio: 'ignore',
     env: { ...process.env, STRONGROOM_CONFIG: JSON.stringify(config), STRONGROOM_ALLOW_LOCAL: 'true', HOST: '127.0.0.1', PORT: String(port) } });
