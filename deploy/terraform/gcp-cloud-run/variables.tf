@@ -32,9 +32,10 @@ variable "kms_keys" {
 variable "tenant_id" {
   type        = string
   description = "The one tenant this deployment serves. Give each tenant its own deployment, KMS key and service account."
+  # The service counts UTF-8 bytes, length() counts characters: derive the byte count from the base64 length.
   validation {
-    condition     = length(var.tenant_id) > 0 && length(var.tenant_id) <= 256
-    error_message = "tenant_id must be 1-256 characters."
+    condition     = length(var.tenant_id) > 0 && length(base64encode(var.tenant_id)) / 4 * 3 - length(regexall("=", base64encode(var.tenant_id))) <= 256
+    error_message = "tenant_id must be 1-256 UTF-8 bytes."
   }
 }
 
@@ -43,11 +44,17 @@ variable "principals" {
     token_sha256 = string
     permissions  = list(string)
     keys         = list(string)
+    # Declared only so a leftover per-principal tenant is rejected: an object type silently drops undeclared attributes.
+    tenant_id = optional(string)
   }))
   description = "Callers of this tenant's deployment. Generate token_sha256 with: strongroom token --token-file FILE --keys K. The raw token never enters Terraform."
   validation {
     condition     = length(var.principals) > 0 && alltrue([for p in var.principals : can(regex("^[a-f0-9]{64}$", p.token_sha256))])
     error_message = "token_sha256 must be a lowercase SHA-256 hex digest."
+  }
+  validation {
+    condition     = alltrue([for p in var.principals : p.tenant_id == null])
+    error_message = "principals no longer carry tenant_id: one deployment serves one tenant (var.tenant_id). Split a mixed-tenant list into one deployment per tenant."
   }
 }
 

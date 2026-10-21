@@ -34,7 +34,7 @@ Prerequisites: OpenTofu ≥ 1.6 (or Terraform ≥ 1.6), `crane`, the AWS CLI and
 node packages/strongroom/dist/cli.js token --token-file .strongroom/app-token --keys primary
 ```
 
-Set `tenant_id` to the one tenant this deployment serves. For more tenants, apply the module once per tenant (a separate state, KMS key and identity each); a deployment never serves a second tenant.
+Set `tenant_id` to the one tenant this deployment serves. For more tenants, apply the module once per tenant (a separate state, KMS key and identity each); a deployment never serves a second tenant. `plan` rejects a `tenant_id` over 256 UTF-8 bytes (the service's limit) and any principal that still has its own `tenant_id`, which the module's object type would otherwise drop without a word. `tofu -chdir=deploy/terraform/<module> test` checks both offline with mock providers.
 
 Copy `principal.token_sha256` (the `tokenSha256` value) into `principals` in your tfvars. Hand `.strongroom/app-token` to the calling application through its own secret store.
 
