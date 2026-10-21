@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { Strongroom, StrongroomError } from './client.ts';
@@ -159,9 +159,17 @@ async function main() {
         const file = options['--plaintext-file'];
         if (file && command === 'encrypt') {
           if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).sort().join() !== 'context,key') fail('With --plaintext-file, input must be exactly {"context": {...}, "key": "..."}.');
-          if ((await stat(file)).size > capabilities.maxPlaintextBytes) fail(`Plaintext file exceeds ${capabilities.maxPlaintextBytes} bytes.`);
-          const plaintext = await readFile(file);
-          try { result = { envelope: await client.encrypt({ ...(input as object), plaintext } as never) }; } finally { plaintext.fill(0); }
+          // Bound the read itself: stat cannot size a FIFO or a file that grows while it is read.
+          const buffer = Buffer.alloc(capabilities.maxPlaintextBytes + 1);
+          try {
+            let size = 0;
+            const handle = await open(file, 'r');
+            try {
+              for (let n = 1; n > 0 && size < buffer.length; size += n) n = (await handle.read(buffer, size, buffer.length - size, null)).bytesRead;
+            } finally { await handle.close(); }
+            if (size > capabilities.maxPlaintextBytes) fail(`Plaintext file exceeds ${capabilities.maxPlaintextBytes} bytes.`);
+            result = { envelope: await client.encrypt({ ...(input as object), plaintext: buffer.subarray(0, size) } as never) };
+          } finally { buffer.fill(0); }
         } else if (file) {
           const plaintext = await client.decryptBytes(input as never);
           try { await writeFile(file, plaintext, { mode: 0o600, flag: 'wx' }); result = { plaintextFile: resolve(file), bytes: plaintext.length }; } finally { plaintext.fill(0); }

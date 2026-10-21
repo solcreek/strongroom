@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -75,6 +75,11 @@ test('real workerd and Node HTTP hosts interoperate through SDK and CLI', { time
       for (const body of [{ context }, { context, key: 'primary', plaintext: 'x' }]) assert.equal((await cli(['encrypt', '--plaintext-file', join(dir, 'dek.bin')], workerUrl, JSON.stringify(body))).code, 2);
       await writeFile(join(dir, 'big.bin'), Buffer.alloc(65537));
       assert.equal((await cli(['encrypt', '--plaintext-file', join(dir, 'big.bin')], workerUrl, JSON.stringify({ key: 'primary', context }))).code, 2);
+      // A FIFO reports size 0: the CLI must bound the read itself, not trust stat.
+      execFileSync('mkfifo', [join(dir, 'pipe')]);
+      const writer = writeFile(join(dir, 'pipe'), Buffer.alloc(200000)).catch(() => {});
+      assert.equal((await cli(['encrypt', '--plaintext-file', join(dir, 'pipe')], workerUrl, JSON.stringify({ key: 'primary', context }))).code, 2);
+      await writer;
     } finally { await rm(dir, { recursive: true, force: true }); }
     const denied = await cli(['decrypt'], workerUrl, input, encryptToken);
     assert.equal(denied.code, 3); assert.equal(denied.stdout, ''); assert.equal(JSON.parse(denied.stderr).error.code, 'FORBIDDEN');
