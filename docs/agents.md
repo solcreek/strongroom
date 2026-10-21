@@ -42,7 +42,7 @@ The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FI
 
 `strongroom setup aws` turns the operator's existing `aws` CLI session into a working configuration in one non-interactive command: it creates (or reuses) the KMS key `alias/NAME`, creates a least-privilege IAM user (or grants an existing ECS task / EKS pod role with `--role-name`), writes a complete `STRONGROOM_CONFIG` plus a caller token to a new private directory, and proves the result with a real Encrypt/Decrypt. Verified against AWS on 2026-10-13 (about 20 s, of which about 12 s is IAM propagation).
 
-One setup provisions one tenant's deployment: `--tenant` becomes the configuration's `tenantId`. For another tenant, run setup again with its own `--tenant`, a distinct `--name` and a new `--directory`, and deploy it separately. Each tenant gets its own key, identity and service URL.
+One setup provisions one tenant's deployment. `--tenant` becomes the configuration's `tenantId`. It also names the resources `sr-<slug>-<hash>` (for example `sr-acme-822b33ad87`; the `name` field of `--dry-run` shows it), and the output directory follows the name. For another tenant, run setup again with its `--tenant` and deploy the result separately; names, directories, keys and identities do not collide. Every key and identity setup creates is marked with its tenant. Setup never reuses a key, or overwrites a role grant, that is not this tenant's. A `--role-name` (AWS) or `--service-account` (GCP) must be dedicated to one tenant's deployment. Setup refuses an AWS role that already serves another deployment. Two setups racing on one role both fail closed rather than share it; never run them concurrently. Setup cannot check a GCP account's grants on other keys. `teardown aws|gcp` always requires `--tenant T`, and it changes nothing unless every resource it would touch is marked for `T` (`NOT_OWNED`, exit 2, otherwise). Use the teardown command setup prints, which includes `--tenant`. Read `keptKey` before recording a tenant as shredded. With `--delete-key`, `false` means the key is scheduled for deletion or destruction, and `null` means teardown found no key where it looked and claims nothing. Without `--delete-key`, `true` means teardown did not touch the key. Follow the `note` before concluding anything. A failure partway lists what was already removed or scheduled, and rerunning the same command resumes. `--name` overrides the derived name for both commands.
 
 1. Plan. Nothing changes; the output lists every action and the IAM permissions the operator needs.
    ```sh
@@ -56,7 +56,7 @@ One setup provisions one tenant's deployment: `--tenant` becomes the configurati
 4. Deploy with the files named in `files` and the commands in `next` (Workers secret, container env, or the IaC modules), then run `strongroom probe --key primary --tenant acme` against the service.
 5. Undo with the `teardown` command printed by setup. The KMS key survives unless `--delete-key`, which schedules deletion after 7 days.
 
-Defaults: `--name strongroom`, `--key primary`, region from the profile, directory `.strongroom/aws-NAME`. The access key secret is written only to `config.json` (0600); stdout never contains it. AWS error text is never echoed, only its error code. Re-running never overwrites files and stops with `RESOURCE_EXISTS` if the IAM user exists; the key behind an existing alias is reused.
+Defaults: `--name` derived from `--tenant`, `--key primary`, region from the profile, directory `.strongroom/aws-NAME`. The access key secret is written only to `config.json` (0600); stdout never contains it. AWS error text is never echoed, only its error code. Re-running never overwrites files. It stops with `RESOURCE_EXISTS` if the IAM user exists. The key behind an existing alias is reused only if it is tagged for this tenant; otherwise it stops with `NOT_OWNED`.
 
 | `error.code` | Exit | Meaning and next step |
 | --- | --- | --- |
@@ -66,6 +66,7 @@ Defaults: `--name strongroom`, `--key primary`, region from the profile, directo
 | `AWS_PERMISSION_DENIED` | 3 | The operator lacks `error.requiredPermissions`; `error.created` and `error.cleanup` list anything already made |
 | `RESOURCE_EXISTS` | 2 | Choose another `--name`, or run the suggested teardown |
 | `KEY_UNUSABLE` | 2 | `alias/NAME` points at a disabled or non-symmetric key; choose another `--name` |
+| `NOT_OWNED` | 2 | The key, identity or role grant is marked for another tenant, or was not created by setup; check `--tenant` and `--name`. Nothing was changed |
 | `INVALID_INPUT` | 2 | `error.path` names the flag to fix |
 | `AWS_ERROR` | 1 | Unexpected AWS failure; `error.awsCode` and `error.operation` identify it |
 
@@ -80,9 +81,9 @@ strongroom setup gcp --tenant acme --project my-project
 strongroom setup gcp --tenant acme --project my-project --service-account run-sa@my-project.iam.gserviceaccount.com
 ```
 
-Defaults: `--name strongroom` (6-30 lowercase characters; names the key ring and service account), `--key primary`, `--location global`, `--protection-level software` (`hsm` is available), project from `gcloud config`, directory `.strongroom/gcp-NAME`. The service account key is read from a temporary private file, written only into `config.json` (0600), and the temporary file is deleted. Setup retries the IAM grant while a new service account propagates (observed: `INVALID_ARGUMENT` for a few seconds).
+Defaults: `--name` derived from `--tenant` (an explicit one must be 6-30 lowercase characters; it names the key ring and service account), `--key primary`, `--location global`, `--protection-level software` (`hsm` is available), `--destroy-scheduled-duration 7d` (24h-120d, fixed when the key is created), project from `gcloud config`, directory `.strongroom/gcp-NAME`. An existing key is reused only if it is labelled for this tenant; otherwise setup stops with `NOT_OWNED`. The service account key is read from a temporary private file, written only into `config.json` (0600), and the temporary file is deleted. Setup retries the IAM grant while a new service account propagates (observed: `INVALID_ARGUMENT` for a few seconds).
 
-Cloud KMS never deletes key rings or keys. `strongroom teardown gcp` removes the grant and the service account it created; `--delete-key` schedules destruction of every key version (30 days by default, restorable until then).
+`strongroom teardown gcp --tenant T` removes the grant and the service account setup created and keeps the key: a deleted CryptoKey name can never be reused. `--delete-key` schedules destruction of every key version. Each version becomes unrecoverable at the reported `destroyTime`, after the duration setup fixed when it created the key (`--destroy-scheduled-duration`, default 7 days). Until then, `gcloud kms keys versions restore` undoes it.
 
 | `error.code` | Exit | Meaning and next step |
 | --- | --- | --- |
@@ -91,7 +92,7 @@ Cloud KMS never deletes key rings or keys. `strongroom teardown gcp` removes the
 | `GCP_PERMISSION_DENIED` | 3 | The operator lacks `error.requiredPermissions` (`roles/cloudkms.admin` with `roles/iam.serviceAccountAdmin` and `roles/iam.serviceAccountKeyAdmin` cover them) |
 | `GCP_ORG_POLICY` | 3 | The organization forbids service account keys; use `--service-account` on Cloud Run/GKE |
 | `GCP_API_DISABLED` | 2 | Enable `cloudkms.googleapis.com` |
-| `RESOURCE_EXISTS` / `KEY_UNUSABLE` / `INVALID_INPUT` | 2 | As for AWS |
+| `RESOURCE_EXISTS` / `KEY_UNUSABLE` / `NOT_OWNED` / `INVALID_INPUT` | 2 | As for AWS |
 | `GCP_ERROR` | 1 | Unexpected; `error.gcpCode` and `error.operation` identify it |
 
 ## Decrypt an existing CLI result

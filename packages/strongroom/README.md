@@ -12,10 +12,10 @@ With a signed-in `aws` or `gcloud` CLI, one command creates the KMS key and a le
 npx strongroom setup aws --tenant acme --dry-run     # plan and required IAM permissions
 npx strongroom setup aws --tenant acme
 npx strongroom setup gcp --tenant acme --project my-project
-npx strongroom teardown aws                          # exact inverse; the key survives unless --delete-key
+npx strongroom teardown aws --tenant acme            # exact inverse; the key survives unless --delete-key
 ```
 
-Each Strongroom deployment serves exactly one tenant, the `--tenant` given to setup. For many tenants, run one deployment per tenant and route each tenant to its own URL and token.
+Each Strongroom deployment serves exactly one tenant, the `--tenant` given to setup. Resource names (`sr-acme-822b33ad87`) and the output directory follow it, and every resource is marked with its tenant, so you can run setup once per tenant in the same account or project and route each tenant to its own URL and token.
 
 ## SDK
 

@@ -56,14 +56,14 @@ Plaintext and tokens never need to appear in CLI flags. `--output` creates a 060
 
 ## Production key in one command (AWS or Google Cloud)
 
-With a signed-in `aws` CLI, this creates a KMS key and a least-privilege IAM user, writes a complete `STRONGROOM_CONFIG` and a caller token to `.strongroom/aws-strongroom/`, and verifies them with a real Encrypt/Decrypt:
+With a signed-in `aws` CLI, this creates a KMS key and a least-privilege IAM user, writes a complete `STRONGROOM_CONFIG` and a caller token to `.strongroom/aws-<name>/` (the name is derived from the tenant and shown by `--dry-run`), and verifies them with a real Encrypt/Decrypt:
 
 ```sh
 npx strongroom setup aws --tenant acme --dry-run   # plan and required IAM permissions
 npx strongroom setup aws --tenant acme
 ```
 
-`setup gcp --tenant acme --project PROJECT` does the same with `gcloud` (add `--service-account EMAIL` on Cloud Run/GKE for keyless workload identity). `teardown aws|gcp` reverses them. See the agent runbooks for [AWS](docs/agents.md#install-strongroom-on-aws-agent-runbook) and [Google Cloud](docs/agents.md#install-strongroom-on-google-cloud-agent-runbook).
+`setup gcp --tenant acme --project PROJECT` does the same with `gcloud` (add `--service-account EMAIL` on Cloud Run/GKE for keyless workload identity). Resource names follow the tenant (`sr-acme-822b33ad87`) and are marked with it, so run setup once per tenant in the same account or project; `teardown aws|gcp --tenant acme` reverses it. See the agent runbooks for [AWS](docs/agents.md#install-strongroom-on-aws-agent-runbook) and [Google Cloud](docs/agents.md#install-strongroom-on-google-cloud-agent-runbook).
 
 ## Application integration
 

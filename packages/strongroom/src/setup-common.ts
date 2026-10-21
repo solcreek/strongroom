@@ -12,6 +12,38 @@ export class SetupError extends StrongroomError {
   constructor(code: string, message: string, status: number, details: Record<string, unknown> = {}) { super(code, message, status); this.details = details; }
   toJSON() { return { ...super.toJSON(), ...this.details }; }
 }
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+// Default cloud resource names follow the tenant, so several tenants' deployments can share an account or
+// project without --name. Always readable slug + hash: a plain form would share a namespace with the hashed
+// one ("ab" vs "ab-fb8e20"), letting a chosen tenant id land on another tenant's name. 40 bits of hash keep
+// accidental collisions negligible; ownership tags (tenantTag) catch the rest. The result fits both AWS
+// (KMS alias, IAM user) and GCP (key ring, service account: ^[a-z][a-z0-9-]{4,28}[a-z0-9]$).
+export function tenantName(tenantId: string): string {
+  const head = tenantId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 16).replace(/-+$/, '');
+  return `sr-${head}${head ? '-' : ''}${sha256(tenantId).slice(0, 10)}`;
+}
+// Written on every resource setup creates (AWS tag, GCP label, service account description) and checked
+// before setup reuses or teardown removes one, so a name that points at another tenant's resource is refused
+// rather than shared or destroyed. A hash, because tag and label values cannot hold arbitrary tenant ids.
+export const tenantTag = (tenantId: string) => sha256(tenantId).slice(0, 32);
+// For commands setup prints for an agent or operator to run: the tenant id is arbitrary text.
+export const shellQuote = (s: string) => /^[A-Za-z0-9._@%+=:,/-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+// --name wins; otherwise the name follows --tenant. Teardown accepts either, so an agent can undo a setup
+// knowing only the tenant.
+export function resourceName(options: Record<string, string>, command: string): string {
+  if (options['--name']) return options['--name'];
+  if (options['--tenant']) return tenantName(options['--tenant']);
+  throw new SetupError('INVALID_INPUT', `${command} needs --tenant TENANT (resource names follow it) or an explicit --name.`, 0, { path: '--tenant' });
+}
+// Teardown's change phase: a failure partway must still say what was already removed or scheduled (a key
+// pending deletion is irreversible in days), and that rerunning the same command resumes.
+export async function reportPartial(removed: Record<string, string>[], change: () => Promise<void>) {
+  try { await change(); } catch (e) {
+    const error = e instanceof SetupError ? e : new SetupError('TEARDOWN_FAILED', 'Teardown failed partway.', 0);
+    error.details = { ...error.details, removed: [...removed], next: 'Rerun the same teardown command; it resumes from what is left.' };
+    throw error;
+  }
+}
 export async function assertNewDirectory(directory: string) {
   if (await stat(directory).then(() => true, () => false)) throw new SetupError('INVALID_INPUT', 'The output directory already exists; secrets are never overwritten.', 0, { path: '--directory', next: 'Choose a new --directory.' });
 }

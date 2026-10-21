@@ -19,14 +19,15 @@ Each run prints one JSON line per step and exits non-zero if any property it dem
 | [tenant-data-keys](tenant-data-keys/) | A tenant's 32-byte data encryption key | Bulk data encrypted locally; the key wrapped by the tenant's own deployment; binary plaintext you can wipe; DEK rotation; destroying one tenant's data, including snapshots |
 | [agent-tools](agent-tools/) | A credential an AI agent's tools use | Credential handles instead of secrets in the model's context; redacting tool output; record-level authorization in the tool runtime |
 
-To run an example against real deployments, provision and deploy one per tenant. Give each its own `--name` and `--directory`, because setup's names do not yet derive from the tenant:
+To run an example against real deployments, provision and deploy one per tenant. Resource names and output directories follow the tenant, so tenants in one account or project do not collide:
 
 ```sh
-strongroom setup aws --tenant acme   --name sr-acme   --directory .strongroom/acme
-strongroom setup aws --tenant globex --name sr-globex --directory .strongroom/globex
+strongroom setup aws --tenant acme      # alias/sr-acme-822b33ad87, IAM user sr-acme-822b33ad87, .strongroom/aws-sr-acme-822b33ad87
+strongroom setup aws --tenant globex
+strongroom teardown aws --tenant globex --delete-key   # offboarding: removes globex's identity, schedules its key's deletion
 ```
 
-Deploy each directory's `config.json` as its own service. Keep each `--name` for the matching `teardown`. Then replace `startDeployment()` with each deployment's URL and tokens.
+Deploy each directory's `config.json` as its own service. Then replace `startDeployment()` with each deployment's URL and tokens.
 
 ## Strongroom or your cloud's KMS directly?
 
