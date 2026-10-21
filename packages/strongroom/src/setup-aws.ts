@@ -111,9 +111,15 @@ export async function setupAws(options: Record<string, string>) {
     const policy = JSON.stringify(kmsPolicy(keyArn));
     let key: Record<string, unknown>;
     if (o.role) {
-      // One inline policy per deployment, so a role shared by several tenants keeps each grant separate;
-      // the preflight above refused an existing policy for any other key.
+      // The preflight refused a role serving another deployment, but IAM has no compare-and-set: two setups
+      // racing on one role could both pass it. Re-check after writing, and withdraw this grant if another
+      // deployment's appeared, so a race fails closed (both may fail) instead of leaving a two-tenant role.
       await aws(['iam', 'put-role-policy', '--role-name', o.role, '--policy-name', `strongroom-kms-${name}`, '--policy-document', policy]); created.push({ rolePolicy: `${o.role}/strongroom-kms-${name}` });
+      const after = ((await aws(['iam', 'list-role-policies', '--role-name', o.role])).PolicyNames ?? []).filter((p: string) => p.startsWith('strongroom-kms') && p !== `strongroom-kms-${name}`);
+      if (after.length) {
+        await aws(['iam', 'delete-role-policy', '--role-name', o.role, '--policy-name', `strongroom-kms-${name}`]); created.pop();
+        throw new SetupError('NOT_OWNED', `Role ${o.role} gained another Strongroom deployment's grant (${after.join(', ')}) during setup; this grant was withdrawn.`, 0, { next: 'Use a role dedicated to this tenant; never run setup for two tenants on one role.' });
+      }
       key = { provider: 'aws', region: o.region, keyId: keyArn, containerCredentials: true };
     } else {
       await aws(['iam', 'create-user', '--user-name', name, '--tags', 'Key=app,Value=strongroom', `Key=strongroom-tenant,Value=${tenantTag(tenantId)}`]); created.push({ iamUser: name });

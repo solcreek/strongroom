@@ -13,7 +13,10 @@ const fake = `#!/usr/bin/env node
 const { readFileSync, appendFileSync } = require('node:fs');
 const args = process.argv.slice(2), op = args[0] + ' ' + args[1];
 appendFileSync(process.env.FAKE_AWS_LOG, JSON.stringify(args) + '\\n');
-const r = JSON.parse(readFileSync(process.env.FAKE_AWS_SCENARIO, 'utf8'))[op] ?? { stdout: {} };
+// An array answers successive calls of the same operation in turn (the last answer repeats).
+const seen = readFileSync(process.env.FAKE_AWS_LOG, 'utf8').split('\\n').filter(l => l && JSON.parse(l).slice(0, 2).join(' ') === op).length;
+const answer = JSON.parse(readFileSync(process.env.FAKE_AWS_SCENARIO, 'utf8'))[op] ?? { stdout: {} };
+const r = Array.isArray(answer) ? answer[Math.min(seen, answer.length) - 1] : answer;
 if (r.stderr) { process.stderr.write(r.stderr); process.exit(254); }
 process.stdout.write(typeof r.stdout === 'string' ? r.stdout : JSON.stringify(r.stdout));
 `;
@@ -120,6 +123,13 @@ test('setup aws reuses this tenant\'s existing key and grants a role instead of 
     { ...ok, 'iam get-role': { stdout: { Role: {} } }, 'iam get-role-policy': err('NoSuchEntity', 'GetRolePolicy'), 'iam list-role-policies': { stdout: { PolicyNames: [`strongroom-kms-${tenantName('acme')}`] } } });
   assert.equal(shared.code, 2); assert.equal(JSON.parse(shared.stderr).error.code, 'NOT_OWNED');
   assert.ok(!shared.ops.some(o => /create|put-role-policy/.test(o)));
+  // A race: the role looked free at preflight, but another tenant's setup wrote its grant in between. This
+  // setup withdraws its own grant and fails, so the role never keeps two tenants' keys.
+  const raced = await run([...base, '--directory', join(dir, 'race'), '--role-name', 'task', '--no-verify'],
+    { ...scenario, 'iam list-role-policies': [{ stdout: { PolicyNames: [] } }, { stdout: { PolicyNames: ['strongroom-kms-sr-test', `strongroom-kms-${tenantName('globex')}`] } }] });
+  assert.equal(raced.code, 2); assert.equal(JSON.parse(raced.stderr).error.code, 'NOT_OWNED');
+  const raceOps = raced.ops.filter(o => /role-polic/.test(o));
+  assert.deepEqual(raceOps, ['iam get-role-policy', 'iam list-role-policies', 'iam put-role-policy', 'iam list-role-policies', 'iam delete-role-policy']);
 });
 
 test('setup aws failures carry a stable code, a next step and the resources created so far', async t => {
