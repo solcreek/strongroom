@@ -27,6 +27,15 @@ npm run dev
 
 `dev:init` creates `.strongroom/` and generates a local KEK and API token from the CSPRNG; the directory is mode 0700, files are 0600, and existing configuration is never overwritten. `dev` starts a real workerd on `127.0.0.1:8787` and rebuilds and reloads on TypeScript changes. After Rust changes, run `npm run build` and restart dev. Start the Node host with `npm run dev:node`.
 
+For more than one local tenant, create one deployment each, as in production. Each tenant gets its own directory and port:
+
+```sh
+npm run cli -- init --tenant acme --port 8801 --directory .strongroom/acme
+node --env-file=.strongroom/acme/server.env dist/server.js   # then use .strongroom/acme/client.env
+```
+
+`--env-file` never overrides a variable the shell already sets, so start each host from a shell without `PORT`, `HOST` or any `STRONGROOM_*` variable (`STRONGROOM_ALLOW_LOCAL=false`, for one, stops the local key from loading).
+
 In another terminal, run the complete SDK example:
 
 ```sh

@@ -1,8 +1,16 @@
 import type { DecryptInput, EncryptInput, Envelope } from './types.js';
 export type { Context, Envelope, EncryptInput, DecryptInput, ErrorBody } from './types.js';
 
+// Every code the service emits (its /v1/capabilities `errors`, with status, retryability and next action),
+// then the codes the SDK raises itself before or instead of a service answer.
+export const serviceErrorCodes = ['INVALID_REQUEST', 'DECRYPT_FAILED', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'METHOD_NOT_ALLOWED', 'PLAINTEXT_NOT_TEXT',
+  'REQUEST_TIMEOUT', 'PAYLOAD_TOO_LARGE', 'UNSUPPORTED_MEDIA_TYPE', 'INTERNAL_ERROR', 'KMS_ACCESS_DENIED', 'KMS_KEY_UNAVAILABLE', 'KMS_UNAVAILABLE', 'NOT_CONFIGURED'] as const;
+export const clientErrorCodes = ['INVALID_CONFIG', 'INVALID_RESPONSE', 'GATEWAY_REJECTED', 'NETWORK_ERROR', 'TIMEOUT', 'ABORTED'] as const;
+export type ErrorCode = typeof serviceErrorCodes[number] | typeof clientErrorCodes[number];
+
 export class StrongroomError extends Error {
-  code: string; status: number; retryable: boolean; requestId?: string; path?: string;
+  // Known codes autocomplete; a newer service or a CLI setup command may still send others.
+  code: ErrorCode | (string & {}); status: number; retryable: boolean; requestId?: string; path?: string;
   // `path` is the JSON path of the offending input field, when the service or CLI can name one.
   constructor(code: string, message: string, status = 0, retryable = false, requestId?: string, path?: string) {
     super(message); this.name = 'StrongroomError'; this.code = code; this.status = status; this.retryable = retryable; this.requestId = requestId; this.path = path;

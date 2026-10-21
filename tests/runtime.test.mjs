@@ -48,17 +48,21 @@ test('real workerd and Node HTTP hosts interoperate through SDK and CLI', { time
     const encrypted = await cli(['encrypt'], workerUrl, JSON.stringify({ key: 'primary', context, plaintext: 'cli-secret' }));
     assert.equal(encrypted.code, 0, encrypted.stderr); assert.equal(encrypted.stderr, '');
     const input = JSON.stringify({ envelope: JSON.parse(encrypted.stdout).envelope, context });
-    const decrypted = await cli(['decrypt'], nodeUrl, input);
+    const decrypted = await cli(['decrypt', '--reveal'], nodeUrl, input);
     assert.equal(decrypted.code, 0, decrypted.stderr); assert.deepEqual(JSON.parse(decrypted.stdout), { plaintext: 'cli-secret' });
+    // Without a destination, decrypt refuses before reading input or calling the service.
+    const undirected = await cli(['decrypt'], nodeUrl, input);
+    assert.equal(undirected.code, 2); assert.equal(undirected.stdout, ''); assert.match(JSON.parse(undirected.stderr).error.message, /--reveal/);
     // An encrypt result file and a bare envelope both work with --envelope; stdin then carries only the context.
     const dir = await mkdtemp(join(tmpdir(), 'strongroom-envelope-'));
     try {
       await writeFile(join(dir, 'result.json'), encrypted.stdout); await writeFile(join(dir, 'bare.json'), JSON.stringify(JSON.parse(encrypted.stdout).envelope));
       for (const file of ['result.json', 'bare.json']) {
-        const r = await cli(['decrypt', '--envelope', join(dir, file)], workerUrl, JSON.stringify({ context }));
+        const r = await cli(['decrypt', '--reveal', '--envelope', join(dir, file)], workerUrl, JSON.stringify({ context }));
         assert.equal(r.code, 0, r.stderr); assert.deepEqual(JSON.parse(r.stdout), { plaintext: 'cli-secret' });
       }
-      assert.equal((await cli(['decrypt', '--envelope', join(dir, 'bare.json')], workerUrl, input)).code, 2);
+      assert.equal((await cli(['decrypt', '--reveal', '--envelope', join(dir, 'bare.json')], workerUrl, input)).code, 2);
+      assert.equal((await cli(['decrypt', '--reveal', '--output', join(dir, 'both.json')], workerUrl, input)).code, 2);
       assert.equal((await cli(['encrypt', '--envelope', join(dir, 'bare.json')], workerUrl, input)).code, 2);
       // Raw bytes stay in files: --plaintext-file feeds encrypt and receives decrypt, never stdout.
       const raw = Buffer.from([0xff, 0x00, 0xfe, 0x80]);
@@ -70,7 +74,7 @@ test('real workerd and Node HTTP hosts interoperate through SDK and CLI', { time
       assert.equal(opened.code, 0, opened.stderr); assert.deepEqual(JSON.parse(opened.stdout), { plaintextFile: join(dir, 'out.bin'), bytes: 4 });
       assert.deepEqual(await readFile(join(dir, 'out.bin')), raw); assert.equal((await stat(join(dir, 'out.bin'))).mode & 0o777, 0o600);
       assert.equal((await cli(['decrypt', '--envelope', join(dir, 'dek.json'), '--plaintext-file', join(dir, 'out.bin')], nodeUrl, JSON.stringify({ context }))).code, 2);
-      const text = await cli(['decrypt', '--envelope', join(dir, 'dek.json')], nodeUrl, JSON.stringify({ context }));
+      const text = await cli(['decrypt', '--reveal', '--envelope', join(dir, 'dek.json')], nodeUrl, JSON.stringify({ context }));
       assert.equal(text.code, 4); assert.equal(JSON.parse(text.stderr).error.code, 'PLAINTEXT_NOT_TEXT');
       for (const body of [{ context }, { context, key: 'primary', plaintext: 'x' }]) assert.equal((await cli(['encrypt', '--plaintext-file', join(dir, 'dek.bin')], workerUrl, JSON.stringify(body))).code, 2);
       await writeFile(join(dir, 'big.bin'), Buffer.alloc(65537));
@@ -81,7 +85,7 @@ test('real workerd and Node HTTP hosts interoperate through SDK and CLI', { time
       assert.equal((await cli(['encrypt', '--plaintext-file', join(dir, 'pipe')], workerUrl, JSON.stringify({ key: 'primary', context }))).code, 2);
       await writer;
     } finally { await rm(dir, { recursive: true, force: true }); }
-    const denied = await cli(['decrypt'], workerUrl, input, encryptToken);
+    const denied = await cli(['decrypt', '--reveal'], workerUrl, input, encryptToken);
     assert.equal(denied.code, 3); assert.equal(denied.stdout, ''); assert.equal(JSON.parse(denied.stderr).error.code, 'FORBIDDEN');
     assert.equal((await cli(['encrypt'], workerUrl, '{bad-json')).code, 2);
     assert.equal((await cli(['encrypt'], workerUrl, '{}')).code, 4);

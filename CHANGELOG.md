@@ -15,12 +15,16 @@ Before 1.0.0, a minor version may change the HTTP API, CLI or configuration; the
 - SDK: `encrypt` takes a `Uint8Array` plaintext. `decryptBytes` returns a `Uint8Array` read without ever becoming a string, and wipes the transport chunks.
 - CLI: `encrypt --plaintext-file` and `decrypt --plaintext-file` move raw bytes through files; a decrypted file is new and mode 0600.
 - `examples/`: four runnable apps, each running one local deployment per tenant: bring-your-own API keys, rotating OAuth tokens, per-tenant data keys with crypto-shredding, and agent tools. Each lists common designs. A comparison covers using Strongroom versus calling AWS KMS or Cloud KMS yourself, including when to do the latter. `tests/examples.test.mjs` runs them all.
+- CLI: `init --tenant T --port P` creates one local development deployment for that tenant. `server.env` sets `PORT`, `client.env` points at it, and the output names the `url` and the `next` command. Run it once per tenant for a local multi-tenant setup. The local tenant is limited to `^[A-Za-z0-9._-]{1,64}$` because it is written into an env file.
+- SDK: `ErrorCode`, a union of every code `StrongroomError.code` can carry, and the runtime lists `serviceErrorCodes` and `clientErrorCodes`. A test keeps them equal to the service's `capabilities.errors` and to the codes the SDK raises.
 
 ### Changed
 
 - **Breaking:** one deployment serves exactly one tenant. `STRONGROOM_CONFIG` takes a top-level `tenantId`, and principals no longer have one; a principal that still carries a `tenantId` is rejected at `$.principals[N].tenantId`, with a message pointing to `$.tenantId`. Every request's `context.tenantId` must equal the deployment's tenant, or it gets `FORBIDDEN`. To serve many tenants, run one deployment per tenant, each with its own KMS key and identity (see `docs/security.md`, "Tenant isolation"). Migrate by moving the principals' common `tenantId` to the top level. A configuration that mixed tenants becomes one configuration per tenant.
 - **Breaking:** `strongroom token` no longer takes `--tenant`, and its `principal` has no `tenantId`. `setup aws|gcp --tenant` sets the configuration's `tenantId` and reports it as `tenantId`. `config-check` reports `tenantId`.
 - **Breaking:** the Terraform modules take a `tenant_id` variable, and `principals` entries drop `tenant_id`. Apply a module once per tenant. `plan` fails on a principal that still has a `tenant_id` (Terraform would otherwise drop it silently and authorize that token for this tenant), and on a `tenant_id` over 256 UTF-8 bytes. Offline `tofu test` suites with mock providers cover both and run in CI.
+- `FORBIDDEN` now says which check refused. `error.path` is `$.context.tenantId` (another tenant's deployment is needed), `$.key` or `$.envelope.key` (the token is not granted that key reference), or absent (the token may not perform the operation), and the message gives the next step. An unknown key reference reads the same as an ungranted one.
+- **Breaking:** CLI `decrypt` no longer prints plaintext by default. It needs exactly one destination: `--output FILE`, `--plaintext-file FILE`, or `--reveal` for stdout. Without one it exits 2 before reading input or calling the service, so a secret never lands in an agent's transcript by accident.
 
 ## [0.1.0] - 2026-10-13
 

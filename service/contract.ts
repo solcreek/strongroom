@@ -20,7 +20,7 @@ export const schemas = {
   DecryptOutput: { type: 'object', additionalProperties: false, required: ['plaintext'], properties: { plaintext: { type: 'string' } } },
   Error: { type: 'object', required: ['error'], properties: { error: { type: 'object', required: ['code', 'message', 'retryable', 'requestId'], properties: {
     code: { type: 'string' }, message: { type: 'string' }, retryable: { type: 'boolean' }, requestId: { type: 'string' },
-    path: { type: 'string', description: 'JSON path of the offending request field, for INVALID_REQUEST only.' },
+    path: { type: 'string', description: 'JSON path of the offending request field: the invalid one for INVALID_REQUEST, the refused one for FORBIDDEN.' },
   } } } },
 };
 export const capabilities = {
@@ -34,7 +34,7 @@ export const capabilities = {
     INVALID_REQUEST: { status: 400, retryable: false, action: 'Fix the field named by error.path; see schema.' },
     DECRYPT_FAILED: { status: 400, retryable: false, action: 'The envelope does not open with this context and key. Rebuild context from trusted identifiers; never overwrite the stored envelope.' },
     UNAUTHENTICATED: { status: 401, retryable: false, action: 'Supply a valid bearer token.' },
-    FORBIDDEN: { status: 403, retryable: false, action: 'This deployment serves another tenant, or the token lacks this operation or key reference. Each tenant has its own deployment and URL.' },
+    FORBIDDEN: { status: 403, retryable: false, action: 'error.path says which check refused. $.context.tenantId: this deployment serves another tenant; call that tenant\'s own deployment. $.key or $.envelope.key: the token is not granted that key reference. No path: the token may not perform this operation; use one whose principal lists it.' },
     NOT_FOUND: { status: 404, retryable: false, action: 'Use a documented endpoint.' },
     METHOD_NOT_ALLOWED: { status: 405, retryable: false, action: 'Use the documented method.' },
     PLAINTEXT_NOT_TEXT: { status: 406, retryable: false, action: 'The envelope opened but holds bytes that are not UTF-8 text. Decrypt with Accept: application/octet-stream (SDK decryptBytes, CLI decrypt --plaintext-file FILE).' },

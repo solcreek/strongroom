@@ -57,18 +57,24 @@ test('binary plaintext roundtrips as raw octets; text stays JSON unless bytes ar
 });
 test('auth, tenant, operation and key permissions are independent checks', async () => {
   const app = appWith(); const envelope = await encrypt(app);
-  for (const [path, body, auth, status, code] of [
+  // Each refusal names the field to fix, so an agent can act on it; an operation refusal has no field.
+  for (const [path, body, auth, status, code, field, hint] of [
     ['/v1/encrypt', {}, '', 401, 'UNAUTHENTICATED'],
     ['/v1/encrypt', {}, 'wrong'.repeat(10), 401, 'UNAUTHENTICATED'],
-    ['/v1/decrypt', { envelope, context }, encryptToken, 403, 'FORBIDDEN'],
-    ['/v1/encrypt', { plaintext: 'x', context: { ...context, tenantId: 'b' }, key: 'primary' }, token, 403, 'FORBIDDEN'],
-    ['/v1/decrypt', { envelope, context: { ...context, tenantId: 'b' } }, token, 403, 'FORBIDDEN'],
-    ['/v1/encrypt', { plaintext: 'x', context, key: 'restricted' }, token, 403, 'FORBIDDEN'],
-    ['/v1/encrypt', { plaintext: 'x', context, key: 'missing' }, token, 403, 'FORBIDDEN'],
+    ['/v1/decrypt', { envelope, context }, encryptToken, 403, 'FORBIDDEN', undefined, 'may not decrypt'],
+    ['/v1/encrypt', { plaintext: 'x', context: { ...context, tenantId: 'b' }, key: 'primary' }, token, 403, 'FORBIDDEN', '$.context.tenantId', 'another tenant'],
+    ['/v1/decrypt', { envelope, context: { ...context, tenantId: 'b' } }, token, 403, 'FORBIDDEN', '$.context.tenantId', 'another tenant'],
+    ['/v1/encrypt', { plaintext: 'x', context, key: 'restricted' }, token, 403, 'FORBIDDEN', '$.key', 'not granted'],
+    ['/v1/decrypt', { envelope: { ...envelope, key: 'restricted' }, context }, token, 403, 'FORBIDDEN', '$.envelope.key', 'not granted'],
   ]) {
     const response = await app.fetch(request(path, body, auth));
-    assert.equal(response.status, status); assert.equal((await response.json()).error.code, code);
+    const { error } = await response.json();
+    assert.equal(response.status, status); assert.equal(error.code, code); assert.equal(error.path, field);
+    if (hint) assert.match(error.message, new RegExp(hint));
   }
+  // An unknown key reference and an ungranted one are indistinguishable: the configuration is not disclosed.
+  const refusal = async key => (await (await app.fetch(request('/v1/encrypt', { plaintext: 'x', context, key }))).json()).error;
+  assert.deepEqual((({ requestId, ...e }) => e)(await refusal('missing')), (({ requestId, ...e }) => e)(await refusal('restricted')));
 });
 test('one deployment serves one tenant; another tenant\'s deployment cannot open its envelopes', async () => {
   // Tenant b's deployment shares the KEK and token here, the worst miswiring: the tenant check and the AAD still hold.

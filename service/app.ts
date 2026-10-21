@@ -1,7 +1,7 @@
 import type { Context, Envelope } from '../packages/strongroom/src/types.ts';
 import { fields, keyPattern, object, parseConfig, text, type Bindings, type Principal } from './config.ts';
 import { base64url, equalHash, sha256, unbase64url, utf8 } from './encoding.ts';
-import { decryptFailed, invalid, notText, ServiceError, unavailable } from './errors.ts';
+import { decryptFailed, forbidden, invalid, notText, ServiceError, unavailable } from './errors.ts';
 import { createProvider } from './providers.ts';
 import { capabilities, openapi } from './contract.ts';
 import type { Fetch } from './transport.ts';
@@ -88,7 +88,7 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log
       if (request.method !== 'POST') throw new ServiceError('METHOD_NOT_ALLOWED', 405, 'Use POST.');
       const principal = await authenticate(request);
       const op = path === '/v1/encrypt' ? 'encrypt' : 'decrypt';
-      if (!principal.permissions.includes(op)) throw new ServiceError('FORBIDDEN', 403, 'Operation is not permitted.');
+      if (!principal.permissions.includes(op)) throw forbidden(undefined, `This token may not ${op}; use a token whose principal lists "${op}".`);
       const input = await body(request);
       // Text arrives as `plaintext`, bytes as `plaintextBase64url`; exactly one of them.
       const field = Object.hasOwn(input, 'plaintextBase64url') ? 'plaintextBase64url' : 'plaintext';
@@ -97,7 +97,10 @@ export function createApp(env: Bindings, core: Core, fetcher: Fetch = fetch, log
       const key = op === 'encrypt' ? input.key : object(input.envelope) ? input.envelope.key : undefined;
       if (typeof key !== 'string' || !keyPattern.test(key)) throw invalid(op === 'encrypt' ? '$.key' : '$.envelope.key', 'must be a configured key reference matching ^[A-Za-z0-9_-]{1,64}$.');
       // The tenant stays in the AAD, so even a miswired key cannot open another deployment's envelopes.
-      if (input.context.tenantId !== config.tenantId || !principal.keys.includes(key) || !providers.has(key)) throw new ServiceError('FORBIDDEN', 403, 'Tenant or key is not permitted.');
+      // Each refusal names the field to fix. The caller is already authenticated, and an unknown key
+      // reference reads the same as an ungranted one, so the configuration is not disclosed.
+      if (input.context.tenantId !== config.tenantId) throw forbidden('$.context.tenantId', 'This deployment serves another tenant; call that tenant\'s own deployment.');
+      if (!principal.keys.includes(key) || !providers.has(key)) throw forbidden(op === 'encrypt' ? '$.key' : '$.envelope.key', 'This token is not granted that key reference.');
       const provider = providers.get(key)!;
       const kmsFailure = (e: unknown) => {
         const error = e instanceof ServiceError ? e : unavailable();

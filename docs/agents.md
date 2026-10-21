@@ -17,12 +17,14 @@ Run the published CLI with `npx strongroom …` (or `npm install strongroom` for
 The CLI accepts `STRONGROOM_URL` plus `STRONGROOM_TOKEN` or `STRONGROOM_TOKEN_FILE`. For a Cloud Run service with invoker IAM, also set `STRONGROOM_CLOUD_RUN_ID_TOKEN=$(gcloud auth print-identity-token)` (SDK: `cloudRunIdToken`); it travels in `X-Serverless-Authorization` so `Authorization` stays the Strongroom bearer. A non-JSON 401/403/404 from a platform in front of the service (Cloud Run IAM, a load balancer, a WAF) surfaces as `GATEWAY_REJECTED`, exit 3. Input is JSON from stdin or `--input FILE`; secrets are never CLI flags. No interactive prompt, login redirect, or automatic browser launch occurs. Responses are one JSON value on stdout. Errors are one JSON object on stderr, with a stable code, status and retryability. `--output FILE` creates a private file and refuses to overwrite any existing path, including a symlink.
 
 ```json
-{"error":{"code":"FORBIDDEN","message":"Tenant or key is not permitted.","status":403,"retryable":false,"requestId":"server-generated-id"}}
+{"error":{"code":"FORBIDDEN","message":"This deployment serves another tenant; call that tenant's own deployment.","status":403,"retryable":false,"requestId":"server-generated-id","path":"$.context.tenantId"}}
 ```
 
-`FORBIDDEN` with a correct token usually means `context.tenantId` names a tenant this deployment doesn't serve: call that tenant's own deployment instead.
+`INVALID_REQUEST`, `FORBIDDEN` and `INVALID_CONFIG` errors add `path`, the JSON path of the field to fix, and the message states the rule (`$.context.recordId: must be a well-formed string of 1-256 UTF-8 bytes.`). Messages never echo supplied values. For `FORBIDDEN`, the path says which check refused:
 
-`INVALID_REQUEST` and `INVALID_CONFIG` errors add `path`, the JSON path of the field to fix, and the message states the rule (`$.context.recordId: must be a well-formed string of 1-256 UTF-8 bytes.`). Messages never echo supplied values.
+- `$.context.tenantId` means this deployment serves another tenant: call that tenant's deployment.
+- `$.key` or `$.envelope.key` means the token is not granted that key reference.
+- No path means the token may not perform this operation (an encrypt-only token asked to decrypt, say).
 
 | Exit code | Meaning | Action |
 | --- | --- | --- |
@@ -103,7 +105,15 @@ printf '%s' '{"context":{"tenantId":"development","recordId":"user-123/openai","
 
 `--envelope` accepts an encrypt result (`{envelope}`) or a bare envelope. Without it, stdin carries the full `{envelope, context}` DecryptInput.
 
-Binary plaintext (a data key, say) stays in files: `encrypt --plaintext-file FILE` reads raw bytes and takes `{context, key}` on stdin; `decrypt --plaintext-file FILE` writes raw bytes to a new 0600 file and prints `{plaintextFile, bytes}`. Always use it for binary secrets. Without it, plaintext that happens to be valid UTF-8 goes to stdout as JSON text; only bytes that are not valid UTF-8 fail with `PLAINTEXT_NOT_TEXT` (exit 4).
+`decrypt` requires exactly one destination for the secret, because an agent's stdout usually ends up in its transcript:
+
+- `--output FILE` writes `{plaintext}` to a new 0600 file.
+- `--plaintext-file FILE` writes the raw bytes to a new 0600 file and prints `{plaintextFile, bytes}`.
+- `--reveal` prints `{plaintext}` on stdout, only when the workflow really needs it there.
+
+Without a destination, it exits 2 before reading input or calling the service.
+
+Binary plaintext (a data key, say) stays in files: `encrypt --plaintext-file FILE` reads raw bytes and takes `{context, key}` on stdin; `decrypt --plaintext-file FILE` writes them back. Always use it for binary secrets. With `--output` or `--reveal`, plaintext that happens to be valid UTF-8 comes back as JSON text; only bytes that are not valid UTF-8 fail with `PLAINTEXT_NOT_TEXT` (exit 4).
 
 The output file contains plaintext. Do not include it in agent transcripts, logs or commits. Remove it when no longer needed. A decrypt operation returns a secret by design; use only the information the authorized workflow needs.
 
