@@ -36,6 +36,8 @@ test('binary plaintext roundtrips as raw octets; text stays JSON unless bytes ar
   const refused = await decrypt(binary);
   assert.equal(refused.status, 406); assert.deepEqual((({ code, retryable }) => ({ code, retryable }))((await refused.json()).error), { code: 'PLAINTEXT_NOT_TEXT', retryable: false });
   assert.equal((await decrypt(binary, { accept: 'application/json, application/octet-stream;q=0.5' })).status, 200);
+  // q=0 excludes a representation, so it must not select bytes.
+  for (const accept of ['application/json, application/octet-stream;q=0', 'application/octet-stream; q=0.000']) assert.equal((await decrypt(binary, { accept })).status, 406, accept);
   // Text envelopes read either way, a leading BOM survives, and other Accept values keep JSON.
   const text = await encrypt(app, '﻿秘密');
   assert.deepEqual(new Uint8Array(await (await decrypt(text, bytes)).arrayBuffer()), utf8.encode('﻿秘密'));

@@ -14,8 +14,12 @@ const headers = (type: string, requestId: string) => ({ 'content-type': type, 'c
 export function json(value: unknown, status = 200, requestId = crypto.randomUUID()): Response {
   return new Response(JSON.stringify(value), { status, headers: headers('application/json; charset=utf-8', requestId) });
 }
-// Decrypt answers with raw bytes only when the caller lists application/octet-stream; JSON stays the default.
-const wantsBytes = (request: Request) => (request.headers.get('accept') ?? '').split(',').some(t => t.split(';')[0].trim().toLowerCase() === 'application/octet-stream');
+// Decrypt answers with raw bytes only when the caller lists application/octet-stream with a nonzero q; JSON stays the default.
+const wantsBytes = (request: Request) => (request.headers.get('accept') ?? '').split(',').some(range => {
+  const [type, ...params] = range.split(';').map(s => s.trim().toLowerCase());
+  const q = params.find(p => p.startsWith('q='));
+  return type === 'application/octet-stream' && !(q && Number(q.slice(2)) === 0);
+});
 export function errorResponse(error: unknown, requestId = crypto.randomUUID()): Response {
   const e = error instanceof ServiceError ? error : new ServiceError('INTERNAL_ERROR', 500, 'An internal error occurred.');
   return json({ error: { code: e.code, message: e.message, retryable: e.retryable, requestId, ...(e.path ? { path: e.path } : {}) } }, e.status, requestId);
