@@ -24,6 +24,7 @@ Before 1.0.0, a minor version may change the HTTP API, CLI or configuration; the
 - **Breaking:** `strongroom token` no longer takes `--tenant`, and its `principal` has no `tenantId`. `setup aws|gcp --tenant` sets the configuration's `tenantId` and reports it as `tenantId`. `config-check` reports `tenantId`.
 - **Breaking:** the Terraform modules take a `tenant_id` variable, and `principals` entries drop `tenant_id`. Apply a module once per tenant. `plan` fails on a principal that still has a `tenant_id` (Terraform would otherwise drop it silently and authorize that token for this tenant), and on a `tenant_id` over 256 UTF-8 bytes. Offline `tofu test` suites with mock providers cover both and run in CI.
 - `FORBIDDEN` now says which check refused. `error.path` is `$.context.tenantId` (another tenant's deployment is needed), `$.key` or `$.envelope.key` (the token is not granted that key reference), or absent (the token may not perform the operation), and the message gives the next step. An unknown key reference reads the same as an ungranted one.
+- **Breaking:** CLI `decrypt` no longer prints plaintext by default. It needs exactly one destination: `--output FILE`, `--plaintext-file FILE`, or `--reveal` for stdout. Without one it exits 2 before reading input or calling the service, so a secret never lands in an agent's transcript by accident.
 
 ## [0.1.0] - 2026-10-13
 

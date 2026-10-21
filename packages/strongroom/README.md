@@ -47,6 +47,7 @@ strongroom encrypt --input request.json --output envelope.json
 strongroom decrypt --envelope envelope.json --output plaintext.json < context.json
 strongroom encrypt --plaintext-file dek.bin < key-and-context.json   # raw bytes in
 strongroom decrypt --envelope dek.json --plaintext-file out.bin < context.json   # raw bytes out, new 0600 file
+strongroom decrypt --envelope envelope.json --reveal < context.json   # only when stdout is where it must go
 strongroom doctor                     # readiness and API version
 strongroom probe --key primary --tenant acme   # real KMS roundtrip through the service
 strongroom token --token-file app-token --keys primary   # principal for this tenant's deployment
