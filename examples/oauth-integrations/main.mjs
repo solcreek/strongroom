@@ -87,9 +87,11 @@ try {
           refresher.encrypt({ key: 'primary', context: context(id, 'oauth-access-token'), plaintext: t.access }),
           refresher.encrypt({ key: 'primary', context: context(id, 'oauth-refresh-token'), plaintext: t.refresh }),
         ]);
-        // If the lease was declared lost meanwhile, the connection is already marked for reconnection.
-        if (!update(id, leased.version, { access, refresh, expiresAt: Date.now() + t.expiresIn * 1000, leaseUntil: 0 })) return { worker, reconnect: true };
-        return { worker, token: t.access, refreshed: true };
+        if (update(id, leased.version, { access, refresh, expiresAt: Date.now() + t.expiresIn * 1000, leaseUntil: 0 })) return { worker, token: t.access, refreshed: true };
+        // Someone else wrote the row meanwhile: either the lease was declared lost (reconnect-required) or
+        // the customer reconnected with a fresh grant. Re-read and act on what the row says now; the tokens
+        // this worker obtained belong to the superseded grant and are dropped.
+        continue;
       }
       await new Promise(r => setTimeout(r, 10)); // someone else holds the lease
     }
@@ -135,6 +137,24 @@ try {
   assert.equal(update('c3', stalledVersion, { access: crashed.access, refresh: crashed.refresh, leaseUntil: 0 }), false);
   assert.deepEqual(db.get('c3'), current);
   step('stalled-writer-after-reconnect', { staleWriteRejected: true });
+
+  // The customer reconnects while a worker is mid-refresh. The worker's write is refused, and it must
+  // pick up the fresh grant rather than report a reconnect that already happened.
+  await connect('c5');
+  edit('c5', { expiresAt: Date.now() });
+  const refresh = idp.refresh;
+  let release, entered;
+  const inside = new Promise(r => { entered = r; });
+  idp.refresh = async token => { entered(); await new Promise(r => { release = r; }); return refresh(token); };
+  const midRefresh = accessToken('c5', 'w7');
+  await inside;
+  await connect('c5');
+  const fresh = await refresher.decrypt({ envelope: db.get('c5').access, context: context('c5', 'oauth-access-token') });
+  release();
+  const outcome = await midRefresh;
+  idp.refresh = refresh;
+  assert.deepEqual([outcome.reconnect, outcome.token, db.get('c5').status], [undefined, fresh, 'active']);
+  step('reconnect-during-refresh', { usesFreshGrant: true });
 
   // A failure before the provider call consumed nothing, so it must not cost a reconnect: the lease is
   // released and the next attempt refreshes normally. Here Strongroom is briefly unreachable.

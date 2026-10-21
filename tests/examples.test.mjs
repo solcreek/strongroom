@@ -22,6 +22,7 @@ test('examples run end to end and keep secrets out of what they store and show',
   assert.equal(oauth.find(s => s.step === 'connected').plaintextInRow, false);
   assert.deepEqual(oauth.find(s => s.step === 'lost-lease'), { step: 'lost-lease', outcome: 'reconnect-required', providerCalled: false });
   assert.deepEqual(oauth.find(s => s.step === 'stalled-writer-after-reconnect'), { step: 'stalled-writer-after-reconnect', staleWriteRejected: true });
+  assert.deepEqual(oauth.find(s => s.step === 'reconnect-during-refresh'), { step: 'reconnect-during-refresh', usesFreshGrant: true });
   assert.deepEqual(oauth.find(s => s.step === 'retryable-before-refresh'), { step: 'retryable-before-refresh', leaseReleased: true, retried: 'refreshed' });
 
   const data = await run('tenant-data-keys');
