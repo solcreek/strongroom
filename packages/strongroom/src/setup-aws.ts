@@ -209,7 +209,7 @@ export async function teardownAws(options: Record<string, string>) {
   // Report the key's state, not what was asked: true kept, false scheduled for deletion (now or earlier),
   // null not found. "Not found here" must never read as a completed crypto-shred.
   return { removed, absent, keptKey: !deleteKey ? true : scheduled ? false : null, keyScheduledForDeletion: scheduled,
-    note: scheduled ? 'Decrypts fail now; the KMS key is deleted at the deletionDate in removed (whatever waiting period it was scheduled with). Until then, aws kms cancel-key-deletion undoes it.'
+    note: scheduled ? 'Decrypts start failing once AWS KMS applies the pending-deletion state (allow a short propagation delay before treating them as refused); the key is deleted at the deletionDate in removed, whatever waiting period it was scheduled with. Until then, aws kms cancel-key-deletion undoes it.'
       : deleteKey ? `No key found at alias/${name} in ${o.region ?? 'the profile region'}, so nothing was scheduled now. An earlier teardown may already have scheduled the key and removed its alias, or the key is in another --region or under another --name. Find it by its strongroom-tenant tag (${tenantTag(tenant)}) with aws kms list-keys and aws kms list-resource-tags.`
       : 'The KMS key was kept; pass --delete-key to schedule its deletion.' };
 }

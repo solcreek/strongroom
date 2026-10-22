@@ -35,6 +35,10 @@ Before 1.0.0, a minor version may change the HTTP API, CLI or configuration; the
 - `setup gcp` sets the key's destroy-scheduled duration explicitly (`--destroy-scheduled-duration`, default `7d`, 24h–120d), since Cloud KMS fixes it at creation. `teardown gcp --delete-key` reports each version's `destroyTime` and no longer claims a 30-day default.
 - `KMS_KEY_UNAVAILABLE`'s action now covers destroyed keys too. Providers report disabled, pending-deletion and destroyed keys alike (AWS `DisabledException` for a key pending deletion, as recorded live; GCP `FAILED_PRECONDITION`). After `teardown --delete-key`, the error is the intended result.
 
+### Fixed
+
+- Teardown no longer claims decrypts fail immediately after `--delete-key`. In a live run against Cloud KMS (2026-10-21), an unwrap still succeeded 47 s after a version was scheduled for destruction and failed about a minute later. The notes now say decrypts fail once the provider applies the change. `setup gcp`'s plan no longer says key rings cannot be deleted. `docs/testing.md` records the whole live run.
+
 ## [0.1.0] - 2026-10-13
 
 ### Added

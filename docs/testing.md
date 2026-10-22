@@ -62,7 +62,31 @@ gcloud kms keys add-iam-policy-binding primary --keyring strongroom-dev --locati
 gcloud iam service-accounts keys create .strongroom/live/gcp-sa.json --iam-account strongroom-dev@PROJECT.iam.gserviceaccount.com
 ```
 
-Key rings cannot be deleted. Cost: AWS charges per KMS key per month; Cloud KMS charges per active key version.
+Cloud KMS can delete a key ring only once its keys are destroyed and deleted, and a deleted CryptoKey name can never be reused, so reuse these names across runs. Cost: AWS charges per KMS key per month; Cloud KMS charges per active key version.
+
+## Live setup and teardown (Google Cloud, 2026-10-21)
+
+The silo flow was run end to end against Cloud KMS in a fresh project (`strongroom-e2e-1021`), with two tenants (`acme`, `globex`) sharing it. Results:
+
+| Step | Result |
+| --- | --- |
+| `setup gcp --tenant acme --dry-run` | name `sr-acme-822b33ad87`, plan includes `destroyScheduledDuration: 7d` |
+| `setup gcp --tenant acme` | about 25 s; live verify passed. Key labelled `app=strongroom`, `strongroom-tenant=<hash>`; `destroyScheduledDuration: 604800s`; service account description `strongroom-tenant=<hash>`; no private key on stdout; files 0600 in a 0700 directory |
+| local host with that config, `probe` | encrypt 390 ms, decrypt 189 ms, changed context rejected |
+| 32-byte key via `--plaintext-file` | round-trips byte for byte |
+| `decrypt` without a destination | exit 2 before any request |
+| context for another tenant | `FORBIDDEN`, `path: $.context.tenantId` |
+| `setup gcp --tenant globex` in the same project | `sr-globex-5bc1a08d28`; no collision |
+| acme's envelope sent to globex's deployment | as acme: `FORBIDDEN`; relabelled as globex: `DECRYPT_FAILED` (globex's key cannot unwrap it) |
+| `setup gcp --tenant globex --name <acme's name>` | `NOT_OWNED` (acme's key is not labelled for globex) |
+| `teardown gcp --tenant globex --name <acme's name> --delete-key` | `NOT_OWNED`; acme's key, binding and account untouched |
+| acme's printed teardown (`--tenant acme ... --delete-key`) | binding and account removed; version 1 `DESTROY_SCHEDULED`, `destroyTime` 7 days out; `keptKey: false` |
+| decrypt through acme's running host afterwards | `KMS_ACCESS_DENIED` (upstream 401): the deleted account's cached token is revoked first |
+| direct Cloud KMS unwrap with the owner's identity | still succeeded 47 s after scheduling, then `FAILED_PRECONDITION` (`KMS_KEY_UNAVAILABLE`) about a minute after |
+| acme's teardown rerun | `keptKey: false`, 0 versions newly scheduled, note says an earlier teardown scheduled them |
+| globex `probe` after acme's shred | unaffected |
+
+**Destruction is not instant on Cloud KMS.** Google's pages do not state how quickly a version's state change reaches cryptographic requests; this run observed under about a minute. Allow for that before treating a tenant as shredded.
 
 ## Observed provider behaviour (2026-10-13)
 
