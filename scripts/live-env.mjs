@@ -173,10 +173,12 @@ async function gcpKeys(s) { const r = await maybe(tools(s).gcloud(['iam', 'servi
 
 async function revokeCloud(p, s, cloud) {
   const revoked = [];
-  if (cloud === 'aws') for (const k of await awsKeys(s)) { await tools(s).aws(['iam', 'delete-access-key', '--user-name', AWS.user, '--access-key-id', k.id]); revoked.push(k.id); }
-  else for (const k of await gcpKeys(s)) { await exec('gcloud', ['iam', 'service-accounts', 'keys', 'delete', k.id, '--iam-account', `${GCP.account}@${s.gcpProject}.iam.gserviceaccount.com`, '--project', s.gcpProject, '--quiet']); revoked.push(k.id); }
+  // The local file goes first: if a cloud delete then fails, nothing local points at a key that may be dead.
+  // The cloud keys are listed afresh on every run, so a rerun finishes the job.
   const file = cloud === 'aws' ? p.awsCredentials : p.gcpCredentials;
   const removedFile = existsSync(file); rmSync(file, { force: true });
+  if (cloud === 'aws') for (const k of await awsKeys(s)) { await tools(s).aws(['iam', 'delete-access-key', '--user-name', AWS.user, '--access-key-id', k.id]); revoked.push(k.id); }
+  else for (const k of await gcpKeys(s)) { await exec('gcloud', ['iam', 'service-accounts', 'keys', 'delete', k.id, '--iam-account', `${GCP.account}@${s.gcpProject}.iam.gserviceaccount.com`, '--project', s.gcpProject, '--quiet']); revoked.push(k.id); }
   return { revoked, removedFile: removedFile ? file : null };
 }
 
@@ -189,7 +191,7 @@ async function issueCloud(p, s, cloud) {
   if (cloud === 'aws') {
     const r = await tools(s).aws(['iam', 'create-access-key', '--user-name', AWS.user]);
     writePrivate(p.awsCredentials, JSON.stringify({ accessKeyId: r.AccessKey.AccessKeyId, secretAccessKey: r.AccessKey.SecretAccessKey }, null, 2));
-    return { issued: r.AccessKey.AccessKeyId, revoked, file: p.awsCredentials, readyAfterMs: await untilReady(() => awsWorks(r.AccessKey)) };
+    return { issued: r.AccessKey.AccessKeyId, revoked, file: p.awsCredentials, readyAfterMs: await untilReady(() => awsWorks(r.AccessKey, s.awsRegion)) };
   }
   mkdirSync(dirname(p.gcpCredentials), { recursive: true, mode: 0o700 });
   await exec('gcloud', ['iam', 'service-accounts', 'keys', 'create', p.gcpCredentials, '--iam-account', `${GCP.account}@${s.gcpProject}.iam.gserviceaccount.com`, '--project', s.gcpProject]);
@@ -210,9 +212,9 @@ async function untilReady(works, timeoutMs = 120000) {
 }
 // The key alone: a profile or session token in the environment would take precedence (an empty AWS_PROFILE is a
 // profile named "", so they are removed, not blanked).
-const awsWorks = k => new Promise(done => {
+const awsWorks = (k, region) => new Promise(done => {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !['AWS_PROFILE', 'AWS_SESSION_TOKEN', 'AWS_DEFAULT_PROFILE'].includes(name)));
-  execFile('aws', ['sts', 'get-caller-identity', '--output', 'json'], { env: { ...env, AWS_ACCESS_KEY_ID: k.AccessKeyId, AWS_SECRET_ACCESS_KEY: k.SecretAccessKey, AWS_PAGER: '' }, timeout: 30000 }, error => done(!error));
+  execFile('aws', ['sts', 'get-caller-identity', '--region', region, '--output', 'json'], { env: { ...env, AWS_ACCESS_KEY_ID: k.AccessKeyId, AWS_SECRET_ACCESS_KEY: k.SecretAccessKey, AWS_PAGER: '' }, timeout: 30000 }, error => done(!error));
 });
 // The service account JWT-bearer exchange the GCP provider itself performs: a token means the key is live.
 async function gcpWorks(key) {
@@ -310,9 +312,13 @@ export async function main(argv) {
     for (const cloud of clouds) result.clouds[cloud] = await commands[o.command](p, s, cloud, o);
   } catch (e) {
     if (e instanceof LiveError) e.details = { ...e.details, completed: result.clouds };
+    // The cloud error is the one to report; a live.env failure on top of it is attached, never substituted.
+    if (mutating) await writeLiveEnv(p, s).catch(w => { if (e instanceof LiveError) e.details.liveEnvError = w.message; });
     throw e;
-  } finally {
-    if (mutating) result.liveEnv = await writeLiveEnv(p, s);
+  }
+  if (mutating) {
+    try { result.liveEnv = await writeLiveEnv(p, s); }
+    catch (w) { throw Object.assign(w instanceof LiveError ? w : new LiveError('LIVE_ENV_FAILED', String(w?.message ?? w)), { details: { ...(w.details ?? {}), completed: result.clouds } }); }
   }
   const held = Object.values(result.clouds).find(c => c.next);
   result.next = {
