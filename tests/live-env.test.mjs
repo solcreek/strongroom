@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { adopt, renderLiveEnv, parseArgs, nextAfterStatus, LiveError } from '../scripts/live-env.mjs';
+import { adopt, renderLiveEnv, parseArgs, nextAfterStatus, applyDecision, planDigest, LiveError } from '../scripts/live-env.mjs';
 
 test('live-env adoption is all or nothing and never adopts an unmarked resource', async () => {
   const imported = [];
@@ -36,6 +36,19 @@ test('live-env arguments are validated before anything runs', () => {
   assert.equal(parseArgs(['status', '--gcp-project', 'p', '--aws-region', 'eu-west-1']).gcpProject, 'p');
   for (const argv of [[], ['destroy'], ['apply', '--cloud', 'azure'], ['apply', '--cloud'], ['apply', '--force']])
     assert.throws(() => parseArgs(argv), e => e instanceof LiveError && e.exit === 2, JSON.stringify(argv));
+});
+
+test('apply --yes applies only a change set that was shown before', () => {
+  const change = (after) => [{ address: 'aws_iam_user_policy.service', change: { actions: ['update'], before: { policy: 'a' }, after } }];
+  const shown = { changes: [{ address: 'aws_iam_user_policy.service', actions: ['update'] }], digest: planDigest(change({ policy: 'b' })) };
+  // The digest covers values, not only addresses: the same resource changing differently is a different plan.
+  assert.notEqual(planDigest(change({ policy: 'b' })), planDigest(change({ policy: 'c' })));
+  assert.deepEqual(applyDecision({ changes: [], digest: planDigest([]) }, null, true), { apply: false });
+  assert.equal(applyDecision(shown, null, false).record, true);
+  assert.equal(applyDecision(shown, null, false).apply, false);
+  assert.equal(applyDecision(shown, null, true).reason, 'NOT_REVIEWED');
+  assert.equal(applyDecision(shown, { digest: planDigest(change({ policy: 'c' })) }, true).reason, 'PLAN_CHANGED');
+  assert.deepEqual(applyDecision(shown, { digest: shown.digest }, true), { apply: true });
 });
 
 test('status names the next step from what it saw', () => {

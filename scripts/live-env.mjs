@@ -4,6 +4,7 @@
 //   node scripts/live-env.mjs status|plan|apply|credentials|revoke [--cloud aws,gcp] [--aws-region R] [--gcp-project P] [--yes]
 // One JSON object on stdout; tofu's own output goes to stderr. Exit 0 success, 2 usage or ownership refusal, 1 failure.
 import { execFile, spawn } from 'node:child_process';
+import { createHash, createSign } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,7 +13,7 @@ import { liveDir } from './live-dir.mjs';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Must match the defaults in infra/live-test/<cloud>/variables.tf.
 const AWS = { name: 'strongroom-dev', user: 'strongroom-dev-live', policy: 'strongroom-kms-primary' };
-const GCP = { location: 'global', keyring: 'strongroom-dev', account: 'strongroom-dev', displayName: 'strongroom live KMS tests (dev only)' };
+const GCP = { location: 'global', keyring: 'strongroom-dev', account: 'strongroom-dev' };
 const MARKER = 'integration-test';
 const ROLE = 'roles/cloudkms.cryptoKeyEncrypterDecrypter';
 
@@ -45,6 +46,7 @@ export const paths = dir => ({
 });
 function writePrivate(file, text) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  chmodSync(dirname(file), 0o700); // mkdirSync's mode applies only to directories it creates.
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, text, { mode: 0o600 }); renameSync(tmp, file); chmodSync(file, 0o600);
 }
@@ -61,15 +63,24 @@ function tofu(p, s, cloud) {
     child.on('close', done);
   });
   const capture = args => exec('tofu', [chdir, ...args], env);
+  let initialized = false;
+  const init = async () => {
+    if (initialized) return;
+    if (await stream(['init', '-input=false', '-no-color', '-reconfigure', `-backend-config=path=${p.state(cloud)}`]) !== 0) throw new LiveError('TOFU_INIT_FAILED', `tofu init failed for ${cloud}; see stderr.`);
+    initialized = true;
+  };
   return {
-    init: async () => { if (await stream(['init', '-input=false', '-no-color', '-reconfigure', `-backend-config=path=${p.state(cloud)}`]) !== 0) throw new LiveError('TOFU_INIT_FAILED', `tofu init failed for ${cloud}; see stderr.`); },
-    stateList: async () => existsSync(p.state(cloud)) ? new Set((await capture(['state', 'list'])).split('\n').filter(Boolean)) : new Set(),
+    init,
+    // Initializes first: the state may have survived a deleted .terraform directory.
+    stateList: async () => existsSync(p.state(cloud)) ? (await init(), new Set((await capture(['state', 'list'])).split('\n').filter(Boolean))) : new Set(),
     import: async (address, id) => { if (await stream(['import', '-input=false', '-no-color', ...vars, address, id]) !== 0) throw new LiveError('TOFU_IMPORT_FAILED', `tofu import ${address} failed; see stderr.`); },
     plan: async file => {
       const code = await stream(['plan', '-input=false', '-no-color', '-detailed-exitcode', `-out=${file}`, ...vars]);
       if (code !== 0 && code !== 2) throw new LiveError('TOFU_PLAN_FAILED', `tofu plan failed for ${cloud}; see stderr.`);
       const plan = JSON.parse(await capture(['show', '-json', file]));
-      return (plan.resource_changes ?? []).filter(c => !c.change.actions.every(a => a === 'no-op' || a === 'read')).map(c => ({ address: c.address, actions: c.change.actions }));
+      const changed = (plan.resource_changes ?? []).filter(c => !c.change.actions.every(a => a === 'no-op' || a === 'read'));
+      // The digest covers each change's before and after values, so a review is bound to the exact change set.
+      return { changes: changed.map(c => ({ address: c.address, actions: c.change.actions })), digest: planDigest(changed) };
     },
     apply: async file => { if (await stream(['apply', '-input=false', '-no-color', file]) !== 0) throw new LiveError('TOFU_APPLY_FAILED', `tofu apply failed for ${cloud}; see stderr.`); },
     output: async () => existsSync(p.state(cloud)) ? JSON.parse(await capture(['output', '-json'])) : {},
@@ -106,8 +117,12 @@ async function findGcp(s) {
   const enabled = await gcloud(['services', 'list', '--enabled', '--filter=config.name=cloudkms.googleapis.com']);
   if (enabled.length) out.push({ address: 'google_project_service.kms', id: `${s.gcpProject}/cloudkms.googleapis.com`, owned: true, resource: 'cloudkms.googleapis.com' });
   if (!enabled.length) return out;
-  // Key rings carry no labels; the keys inside are what adoption checks.
-  if (await maybe(gcloud(['kms', 'keyrings', 'describe', ring]))) out.push({ address: 'google_kms_key_ring.this', id: ring, owned: true, resource: ring });
+  // Key rings carry no labels: a ring counts as ours only if it already holds a key with the marker. An empty or
+  // foreign ring of the same name is refused rather than filled with test keys.
+  if (await maybe(gcloud(['kms', 'keyrings', 'describe', ring]))) {
+    const keys = await gcloud(['kms', 'keys', 'list', '--keyring', ring]);
+    out.push({ address: 'google_kms_key_ring.this', id: ring, owned: keys.some(k => k.labels?.purpose === MARKER), resource: ring });
+  }
   let primaryOwned = false;
   for (const which of ['primary', 'secondary']) {
     const key = await maybe(gcloud(['kms', 'keys', 'describe', `${ring}/cryptoKeys/${which}`]));
@@ -117,7 +132,7 @@ async function findGcp(s) {
     out.push({ address: `google_kms_crypto_key.${which}`, id: `${ring}/cryptoKeys/${which}`, owned, resource: `${ring}/cryptoKeys/${which}` });
   }
   const account = await maybe(gcloud(['iam', 'service-accounts', 'describe', email]));
-  if (account) out.push({ address: 'google_service_account.service', id: `projects/${s.gcpProject}/serviceAccounts/${email}`, owned: (account.description ?? '').includes(`purpose=${MARKER}`) || account.displayName === GCP.displayName, resource: email });
+  if (account) out.push({ address: 'google_service_account.service', id: `projects/${s.gcpProject}/serviceAccounts/${email}`, owned: (account.description ?? '').includes(`purpose=${MARKER}`), resource: email });
   if (out.some(f => f.address === 'google_kms_crypto_key.primary')) {
     const policy = await gcloud(['kms', 'keys', 'get-iam-policy', `${ring}/cryptoKeys/primary`]);
     if ((policy.bindings ?? []).some(b => b.role === ROLE && b.members?.includes(`serviceAccount:${email}`)))
@@ -174,22 +189,61 @@ async function issueCloud(p, s, cloud) {
   if (cloud === 'aws') {
     const r = await tools(s).aws(['iam', 'create-access-key', '--user-name', AWS.user]);
     writePrivate(p.awsCredentials, JSON.stringify({ accessKeyId: r.AccessKey.AccessKeyId, secretAccessKey: r.AccessKey.SecretAccessKey }, null, 2));
-    return { issued: r.AccessKey.AccessKeyId, revoked, file: p.awsCredentials, note: 'A new IAM access key can take about 10 s to work everywhere.' };
+    return { issued: r.AccessKey.AccessKeyId, revoked, file: p.awsCredentials, readyAfterMs: await untilReady(() => awsWorks(r.AccessKey)) };
   }
   mkdirSync(dirname(p.gcpCredentials), { recursive: true, mode: 0o700 });
   await exec('gcloud', ['iam', 'service-accounts', 'keys', 'create', p.gcpCredentials, '--iam-account', `${GCP.account}@${s.gcpProject}.iam.gserviceaccount.com`, '--project', s.gcpProject]);
   chmodSync(p.gcpCredentials, 0o600);
-  return { issued: JSON.parse(readFileSync(p.gcpCredentials, 'utf8')).private_key_id, revoked, file: p.gcpCredentials };
+  const key = JSON.parse(readFileSync(p.gcpCredentials, 'utf8'));
+  return { issued: key.private_key_id, revoked, file: p.gcpCredentials, readyAfterMs: await untilReady(() => gcpWorks(key)) };
+}
+
+// New IAM access keys and service account keys take seconds to work everywhere (a fresh GCP key failed the first
+// live scenario on 2026-10-26). credentials returns only once the new one authenticates, so any run after it works.
+async function untilReady(works, timeoutMs = 120000) {
+  const started = Date.now();
+  while (!(await works())) {
+    if (Date.now() - started > timeoutMs) throw new LiveError('CREDENTIAL_NOT_READY', 'The new credential did not authenticate within 2 minutes; it is issued and written, so retry the run shortly or revoke it.');
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  return Date.now() - started;
+}
+// The key alone: a profile or session token in the environment would take precedence (an empty AWS_PROFILE is a
+// profile named "", so they are removed, not blanked).
+const awsWorks = k => new Promise(done => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !['AWS_PROFILE', 'AWS_SESSION_TOKEN', 'AWS_DEFAULT_PROFILE'].includes(name)));
+  execFile('aws', ['sts', 'get-caller-identity', '--output', 'json'], { env: { ...env, AWS_ACCESS_KEY_ID: k.AccessKeyId, AWS_SECRET_ACCESS_KEY: k.SecretAccessKey, AWS_PAGER: '' }, timeout: 30000 }, error => done(!error));
+});
+// The service account JWT-bearer exchange the GCP provider itself performs: a token means the key is live.
+async function gcpWorks(key) {
+  const now = Math.floor(Date.now() / 1000);
+  const part = v => Buffer.from(JSON.stringify(v)).toString('base64url');
+  const unsigned = `${part({ alg: 'RS256', typ: 'JWT', kid: key.private_key_id })}.${part({ iss: key.client_email, scope: 'https://www.googleapis.com/auth/cloudkms', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 300 })}`;
+  const assertion = `${unsigned}.${createSign('RSA-SHA256').update(unsigned).sign(key.private_key, 'base64url')}`;
+  const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }) }).catch(() => null);
+  return Boolean(r?.ok);
 }
 
 // --- commands ------------------------------------------------------------------------------------------------------
+export const planDigest = changed => createHash('sha256').update(JSON.stringify(changed.map(c => [c.address, c.change.actions, c.change.before ?? null, c.change.after ?? null]))).digest('hex');
+
+// apply --yes applies only a change set an earlier plan or apply already showed: a fresh plan whose digest differs
+// (the cloud or the code moved in between) is shown again instead of applied.
+export function applyDecision(plan, reviewed, yes) {
+  if (!plan.changes.length) return { apply: false };
+  if (!yes) return { apply: false, record: true, next: 'Review the changes, then rerun with --yes.' };
+  if (reviewed?.digest !== plan.digest) return { apply: false, record: true, reason: reviewed ? 'PLAN_CHANGED' : 'NOT_REVIEWED', next: 'These changes were not shown before. Review them, then rerun with --yes.' };
+  return { apply: true };
+}
+
 async function planCloud(p, s, cloud) {
   const t = tofu(p, s, cloud);
   await t.init();
   const adopted = await adopt(cloud === 'aws' ? await findAws(s) : await findGcp(s), await t.stateList(), t.import);
   const file = join(p.data(cloud), 'live.tfplan');
-  return { t, file, adopted, changes: await t.plan(file) };
+  return { t, file, adopted, ...(await t.plan(file)) };
 }
+const reviewedFile = (p, cloud) => join(p.data(cloud), 'reviewed.json');
 
 const commands = {
   async status(p, s, cloud) {
@@ -199,12 +253,18 @@ const commands = {
       resources: found.map(f => ({ address: f.address, resource: f.resource, marked: f.owned, inState: inState.has(f.address), ...(f.state ? { keyState: f.state } : {}) })),
       credentials: { live: await (cloud === 'aws' ? awsKeys(s) : gcpKeys(s)), localFile: existsSync(cloud === 'aws' ? p.awsCredentials : p.gcpCredentials) } };
   },
-  async plan(p, s, cloud) { const { adopted, changes } = await planCloud(p, s, cloud); return { adopted, changes }; },
+  async plan(p, s, cloud) {
+    const { adopted, changes, digest } = await planCloud(p, s, cloud);
+    if (changes.length) writePrivate(reviewedFile(p, cloud), JSON.stringify({ digest, changes }));
+    return { adopted, changes };
+  },
   async apply(p, s, cloud, o) {
-    const { t, file, adopted, changes } = await planCloud(p, s, cloud);
-    if (changes.length && !o.yes) return { adopted, changes, applied: false, next: `Review the changes, then rerun with --yes: node scripts/live-env.mjs apply --cloud ${cloud} --yes` };
-    if (changes.length) await t.apply(file);
-    return { adopted, changes, applied: changes.length > 0 };
+    const plan = await planCloud(p, s, cloud);
+    const file = reviewedFile(p, cloud);
+    const d = applyDecision(plan, existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null, o.yes);
+    if (d.record) writePrivate(file, JSON.stringify({ digest: plan.digest, changes: plan.changes }));
+    if (d.apply) { await plan.t.apply(plan.file); rmSync(file, { force: true }); }
+    return { adopted: plan.adopted, changes: plan.changes, applied: Boolean(d.apply), ...(d.reason ? { reason: d.reason } : {}), ...(d.next ? { next: `${d.next} node scripts/live-env.mjs apply --cloud ${cloud} --yes` } : {}) };
   },
   credentials: (p, s, cloud) => issueCloud(p, s, cloud),
   revoke: (p, s, cloud) => revokeCloud(p, s, cloud),
@@ -243,22 +303,34 @@ export async function main(argv) {
   writePrivate(p.settings, JSON.stringify({ awsRegion: s.awsRegion, ...(s.gcpProject ? { gcpProject: s.gcpProject } : {}) }, null, 2));
   const result = { command: o.command, liveDir: dir, clouds: {} };
   if (!clouds.includes('gcp') && !o.cloud) result.skipped = { gcp: 'No GCP project known; pass --gcp-project P once.' };
-  for (const cloud of clouds) result.clouds[cloud] = await commands[o.command](p, s, cloud, o);
-  if (o.command !== 'status' && o.command !== 'plan') result.liveEnv = await writeLiveEnv(p, s);
+  // live.env is rewritten even when a cloud fails partway, so it never names a credential file that is gone (or
+  // misses one that was just issued); the error then lists what each earlier cloud already did.
+  const mutating = o.command !== 'status' && o.command !== 'plan';
+  try {
+    for (const cloud of clouds) result.clouds[cloud] = await commands[o.command](p, s, cloud, o);
+  } catch (e) {
+    if (e instanceof LiveError) e.details = { ...e.details, completed: result.clouds };
+    throw e;
+  } finally {
+    if (mutating) result.liveEnv = await writeLiveEnv(p, s);
+  }
+  const held = Object.values(result.clouds).find(c => c.next);
   result.next = {
-    status: nextAfterStatus(result.clouds),
-    plan: 'node scripts/live-env.mjs apply',
-    apply: 'node scripts/live-env.mjs credentials',
-    credentials: 'npm run test:live, then node scripts/live-env.mjs revoke',
-    revoke: 'Done. Issue new credentials before the next live run.',
-  }[o.command];
+    status: () => nextAfterStatus(result.clouds),
+    plan: () => Object.values(result.clouds).some(c => c.changes.length) ? 'node scripts/live-env.mjs apply --yes (applies the changes just shown)' : 'No changes. node scripts/live-env.mjs credentials',
+    apply: () => held?.next ?? 'node scripts/live-env.mjs credentials',
+    credentials: () => 'npm run test:live, then node scripts/live-env.mjs revoke',
+    revoke: () => 'Done. Issue new credentials before the next live run.',
+  }[o.command]();
   return result;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   process.umask(0o077);
   main(process.argv.slice(2)).then(r => console.log(JSON.stringify(r, null, 2)), e => {
-    const error = e instanceof LiveError ? { code: e.code, message: e.message, ...e.details, ...(e.stderr ? { detail: tail(e.stderr) } : {}) } : { code: 'INTERNAL', message: String(e?.message ?? e) };
+    // A JSON.parse message quotes part of its input, which may be a credential: withhold it.
+    const message = e instanceof SyntaxError ? 'A tool or file returned malformed JSON (content withheld).' : String(e?.message ?? e);
+    const error = e instanceof LiveError ? { code: e.code, message: e.message, ...e.details, ...(e.stderr ? { detail: tail(e.stderr) } : {}) } : { code: 'INTERNAL', message };
     console.error(JSON.stringify({ error }));
     process.exit(e instanceof LiveError ? e.exit : 1);
   });

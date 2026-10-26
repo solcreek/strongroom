@@ -300,7 +300,7 @@ function compare(provider, results) {
 
 const providers = (option('--provider') ?? 'aws,gcp,openbao').split(',');
 const runners = { aws, gcp, openbao };
-const report = { verified: today, record, mutate, providers: {}, failures: [], drift: [] };
+const report = { verified: today, record, mutate, providers: {}, failures: [], drift: [], warnings: [] };
 const cleanup = [];
 try {
   const e2eKeys = {}, denied = [];
@@ -315,6 +315,8 @@ try {
     report.failures.push(...r.results.filter(x => ![x.expect].flat().includes(x.observed)).map(x => `${name}/${x.name}: expected ${x.expect}, observed ${x.observed}`));
     report.drift.push(...compare(name, r.results));
     if (r.e2e) { Object.assign(e2eKeys, r.e2e.keys); if (r.e2e.denied) denied.push(r.e2e.denied); }
+    // Passing as the administrator proves nothing about least privilege: say so instead of looking green.
+    if (r.e2e && !r.e2e.denied) report.warnings.push(`${name}: no service credentials, so the service role ran as the administrator and "not granted" scenarios were not exercised. Run node scripts/live-env.mjs credentials.`);
   }
   if (Object.keys(e2eKeys).length) {
     if (!existsSync('dist/worker.js')) throw new Error('Run npm run build first.');

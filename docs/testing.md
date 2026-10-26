@@ -31,7 +31,7 @@ The service identities have no grant on the secondary keys, so "not granted" sce
 npm run build
 npm run live:env -- status --gcp-project P        # once per clone: the project is remembered; AWS defaults to us-east-1
 npm run live:env -- apply                         # adopts what exists, plans, and stops; review the changes
-npm run live:env -- apply --yes                   # applies exactly the reviewed plan
+npm run live:env -- apply --yes                   # applies only if a fresh plan matches the one shown (same digest)
 npm run live:env -- credentials                   # a fresh AWS access key and GCP service account key, 0600; older ones are revoked
 npm run test:live                                 # aws, gcp, openbao; skips any provider without configuration
 npm run test:live -- --mutate                     # also disable/re-enable the secondary keys (about 2 more minutes)
@@ -39,7 +39,7 @@ npm run test:live -- --record                     # rewrite fixtures after an in
 npm run live:env -- revoke                        # delete both credentials in the cloud and locally
 ```
 
-Every command prints one JSON object with a `next` step. `status` lists each resource, with whether it carries the marker and whether it is in state, plus every live credential and its age. Add `--cloud aws` or `--cloud gcp` to act on one stack. `npm run test:live -- --provider openbao` needs no account and runs in CI.
+`plan` and `apply` record a digest of the change set they show, covering every change's before and after values. `apply --yes` plans again and applies only when the digest matches. If the cloud or the code moved in between, it shows the new changes (`reason: PLAN_CHANGED`, or `NOT_REVIEWED` when nothing was shown before) and applies nothing. Every command prints one JSON object with a `next` step. If a command fails partway, `live.env` is still rewritten to match the files on disk, and the error's `completed` lists what earlier clouds already did. `status` lists each resource, with whether it carries the marker and whether it is in state, plus every live credential and its age. Add `--cloud aws` or `--cloud gcp` to act on one stack. `npm run test:live -- --provider openbao` needs no account and runs in CI.
 
 `test:live` prints one JSON report on stdout (`providers.*.results`, `endToEnd`, `failures`, `drift`) and exits 1 on any failure or drift. Administration runs as you:
 - AWS: the AWS CLI's default credentials produce the cross-key ciphertexts and, with `--mutate`, disable keys.
@@ -61,6 +61,12 @@ The files live in `.strongroom/live/` at the root of the main checkout. Every wo
 ### New machine, lost state, or a fresh account
 
 State is a cache, not the source of truth. When it is missing, `plan` and `apply` find the resources by name, check that each carries the `purpose=integration-test` marker, and import them. One unmarked resource refuses the whole adoption with `NOT_OWNED` before anything is imported, so a name collision never pulls someone else's key into the stack.
+
+Where the marker lives depends on the resource:
+- **Keys and the IAM user** carry it as a tag or label.
+- **The service account** carries it in its description.
+- **A key ring** cannot carry labels, so it counts as marked only if it already holds a key with the marker. An empty ring, or someone else's ring of the same name, is refused.
+- **The Cloud KMS API's enablement** is adopted without a check, since it is a project setting and `disable_on_destroy = false`.
 
 After an adoption, the plan shows only attributes the providers keep in state alone (`deletion_window_in_days`, `terraform_labels`). Applying them changes nothing in the cloud (verified 2026-10-26). In an account or project without the resources, `apply` creates them.
 
