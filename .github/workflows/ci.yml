@@ -104,8 +104,8 @@ jobs:
       - name: Format, validate and test
         # One command per line: under bash -e, a failure inside an && chain would not stop the loop.
         run: |
-          tofu fmt -check -recursive deploy/terraform
-          for m in deploy/terraform/*/; do
+          tofu fmt -check -recursive deploy/terraform infra
+          for m in deploy/terraform/*/ infra/live-test/*/; do
             tofu -chdir="$m" init -backend=false -input=false
             tofu -chdir="$m" validate
             tofu -chdir="$m" test

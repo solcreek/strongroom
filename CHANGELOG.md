@@ -16,6 +16,12 @@ Before 1.0.0, a minor version may change the HTTP API, CLI or configuration; the
 - CLI: `encrypt --plaintext-file` and `decrypt --plaintext-file` move raw bytes through files; a decrypted file is new and mode 0600.
 - `examples/`: four runnable apps, each running one local deployment per tenant: bring-your-own API keys, rotating OAuth tokens, per-tenant data keys with crypto-shredding, and agent tools. Each lists common designs. A comparison covers using Strongroom versus calling AWS KMS or Cloud KMS yourself, including when to do the latter. `tests/examples.test.mjs` runs them all.
 - CLI: `init --tenant T --port P` creates one local development deployment for that tenant. `server.env` sets `PORT`, `client.env` points at it, and the output names the `url` and the `next` command. Run it once per tenant for a local multi-tenant setup. The local tenant is limited to `^[A-Za-z0-9._-]{1,64}$` because it is written into an env file.
+- The live test environment is code: OpenTofu stacks in `infra/live-test/{aws,gcp}`, driven by `npm run live:env -- status|plan|apply|credentials|revoke`.
+  - **Credentials.** The service identities' credentials are issued per run and revoked after it. They never enter OpenTofu state, and issuing new ones revokes the old.
+  - **Lost state.** State is rebuilt by adopting the existing resources. Adoption refuses any resource without the `purpose=integration-test` marker, before importing anything.
+  - **Worktrees.** Local files live in one directory per clone, shared by its worktrees.
+  - **Least privilege.** The AWS service user's grant now requires Strongroom's encryption context, like a real deployment's. Offline `tofu test` suites assert that each service identity reaches the primary key only.
+  - **Docs.** `docs/testing.md` documents the whole workflow, replacing the hand-run provisioning steps.
 - SDK: `ErrorCode`, a union of every code `StrongroomError.code` can carry, and the runtime lists `serviceErrorCodes` and `clientErrorCodes`. A test keeps them equal to the service's `capabilities.errors` and to the codes the SDK raises.
 
 ### Changed

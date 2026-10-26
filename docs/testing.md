@@ -14,55 +14,61 @@ Byte-level record/replay does not fit KMS: SigV4 signatures embed timestamps, ev
 
 Without `--record`, the live run compares every observed upstream failure against the fixture and reports **drift** — a provider changing its error shape fails the run instead of silently changing the error code callers see.
 
-## Running live
+## The live environment
+
+The cloud resources the suite runs against are code: `infra/live-test/aws` and `infra/live-test/gcp` (OpenTofu). `scripts/live-env.mjs` (`npm run live:env --`) drives them and issues the service credentials each run needs. Credentials never enter OpenTofu state or the repository, and they do not outlive a run: each is issued for a run and revoked after it.
+
+| Stack | Resources | Marker |
+| --- | --- | --- |
+| AWS (default `us-east-1`) | KMS keys `alias/strongroom-dev` (primary) and `alias/strongroom-dev-secondary`. IAM user `strongroom-dev-live`, with one inline policy granting `kms:Encrypt`/`kms:Decrypt` on the primary key only, with the `strongroom` encryption context required, as `setup aws` grants a deployment | tags `project=strongroom`, `purpose=integration-test`, `managed-by=opentofu` |
+| GCP (project given once) | Key ring `strongroom-dev`, with keys `primary` and `secondary`. Service account `strongroom-dev`, granted `roles/cloudkms.cryptoKeyEncrypterDecrypter` on `primary` only | labels as above; the service account's description says `purpose=integration-test` |
+
+The service identities have no grant on the secondary keys, so "not granted" scenarios exercise real IAM denials. `--mutate` disables the secondary keys and restores them. The keys have `prevent_destroy`: recorded ciphertexts depend on them, and a deleted CryptoKey name can never be reused.
+
+### Run the suite
 
 ```sh
 npm run build
-npm run test:live                               # aws, gcp, openbao — skips any provider without configuration
-npm run test:live -- --provider openbao         # no account needed; runs in CI
-npm run test:live -- --record                   # rewrite fixtures after an intentional change; review the diff
-npm run test:live -- --mutate                   # also disable/re-enable the dedicated secondary keys
+npm run live:env -- status --gcp-project P        # once per clone: the project is remembered; AWS defaults to us-east-1
+npm run live:env -- apply                         # adopts what exists, plans, and stops; review the changes
+npm run live:env -- apply --yes                   # applies exactly the reviewed plan
+npm run live:env -- credentials                   # a fresh AWS access key and GCP service account key, 0600; older ones are revoked
+npm run test:live                                 # aws, gcp, openbao; skips any provider without configuration
+npm run test:live -- --mutate                     # also disable/re-enable the secondary keys (about 2 more minutes)
+npm run test:live -- --record                     # rewrite fixtures after an intentional change; review the diff
+npm run live:env -- revoke                        # delete both credentials in the cloud and locally
 ```
 
-Output is one JSON report on stdout (`providers.*.results`, `endToEnd`, `failures`, `drift`); exit 1 on any failure or drift. Configuration comes from the environment or `.strongroom/live/live.env` (git-ignored, mode 0600):
+Every command prints one JSON object with a `next` step. `status` lists each resource, with whether it carries the marker and whether it is in state, plus every live credential and its age. Add `--cloud aws` or `--cloud gcp` to act on one stack. `npm run test:live -- --provider openbao` needs no account and runs in CI.
 
-```sh
-STRONGROOM_LIVE_AWS_KEY_ARN=arn:aws:kms:us-east-1:ACCOUNT:key/...        # service user may Encrypt/Decrypt
-STRONGROOM_LIVE_AWS_SECONDARY_ARN=arn:aws:kms:us-east-1:ACCOUNT:key/...  # service user has no grant
-STRONGROOM_LIVE_AWS_CREDENTIALS_FILE=.strongroom/live/aws-service-credentials.json  # {"accessKeyId","secretAccessKey"}
-STRONGROOM_LIVE_GCP_KEY=projects/P/locations/global/keyRings/R/cryptoKeys/primary
-STRONGROOM_LIVE_GCP_SECONDARY=projects/P/locations/global/keyRings/R/cryptoKeys/secondary
-STRONGROOM_LIVE_GCP_SA_FILE=.strongroom/live/gcp-sa.json                  # downloaded key; granted on primary only
-```
+`test:live` prints one JSON report on stdout (`providers.*.results`, `endToEnd`, `failures`, `drift`) and exits 1 on any failure or drift. Administration runs as you:
+- AWS: the AWS CLI's default credentials produce the cross-key ciphertexts and, with `--mutate`, disable keys.
+- GCP: the `authorized_user` ADC file from `gcloud auth application-default login`.
 
-The AWS CLI's default credentials (`aws configure export-credentials`) act as the administrator that produces cross-key ciphertexts and, with `--mutate`, disables keys. GCP administration uses the `authorized_user` ADC file from `gcloud auth application-default login`. The service credentials are deliberately least-privilege so that "not granted" scenarios exercise real IAM denials.
+Without issued credentials, the suite also runs the service role as the administrator, and the "not granted" scenarios then expect success.
 
-## Provisioning the test resources
+### Local files
 
-AWS (run 2026-10-13):
+The files live in `.strongroom/live/` at the root of the main checkout. Every worktree of the clone shares this directory, so a credential issued in one worktree can be seen and revoked from any other. `STRONGROOM_LIVE_DIR` overrides the location. The directory is ignored by version control and has mode 0700; every file in it is 0600.
 
-```sh
-aws kms create-key --region us-east-1 --description "strongroom live test" --query KeyMetadata.Arn --output text   # primary, then again for secondary
-aws kms create-alias --region us-east-1 --alias-name alias/strongroom-dev --target-key-id PRIMARY_ARN
-aws iam create-user --user-name strongroom-dev-live
-aws iam put-user-policy --user-name strongroom-dev-live --policy-name strongroom-kms-primary \
-  --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["kms:Encrypt","kms:Decrypt"],"Resource":"PRIMARY_ARN"}]}'
-aws iam create-access-key --user-name strongroom-dev-live   # write AccessKeyId/SecretAccessKey to the 0600 credentials file
-```
+| File | Holds |
+| --- | --- |
+| `settings.json` | the AWS region and GCP project |
+| `tofu/<cloud>/` | OpenTofu state and providers. No secret: names, ARNs and IDs |
+| `live.env` | key IDs, and the credential paths while credentials are issued. Read by `test:live` |
+| `aws-service-credentials.json`, `gcp-sa.json` | the issued credentials, present only between `credentials` and `revoke` |
 
-GCP (2026-10-13 these ran as the equivalent Cloud KMS and IAM REST calls with an ADC token, because the `gcloud` session needed reauthentication):
+### New machine, lost state, or a fresh account
 
-```sh
-gcloud kms keyrings create strongroom-dev --location global
-gcloud kms keys create primary --keyring strongroom-dev --location global --purpose encryption
-gcloud kms keys create secondary --keyring strongroom-dev --location global --purpose encryption
-gcloud iam service-accounts create strongroom-dev
-gcloud kms keys add-iam-policy-binding primary --keyring strongroom-dev --location global \
-  --member serviceAccount:strongroom-dev@PROJECT.iam.gserviceaccount.com --role roles/cloudkms.cryptoKeyEncrypterDecrypter
-gcloud iam service-accounts keys create .strongroom/live/gcp-sa.json --iam-account strongroom-dev@PROJECT.iam.gserviceaccount.com
-```
+State is a cache, not the source of truth. When it is missing, `plan` and `apply` find the resources by name, check that each carries the `purpose=integration-test` marker, and import them. One unmarked resource refuses the whole adoption with `NOT_OWNED` before anything is imported, so a name collision never pulls someone else's key into the stack.
 
-Cloud KMS can delete a key ring only once its keys are destroyed and deleted, and a deleted CryptoKey name can never be reused, so reuse these names across runs. Cost: AWS charges per KMS key per month; Cloud KMS charges per active key version.
+After an adoption, the plan shows only attributes the providers keep in state alone (`deletion_window_in_days`, `terraform_labels`). Applying them changes nothing in the cloud (verified 2026-10-26). In an account or project without the resources, `apply` creates them.
+
+### Checks
+
+`tofu -chdir=infra/live-test/<cloud> test` runs offline with mock providers. It asserts that each service identity reaches the primary key only, and for GCP that a project must be given. CI runs it with `fmt` and `validate`. `tests/live-env.test.mjs` covers adoption, `live.env` and argument handling.
+
+Cost: AWS charges per KMS key per month; Cloud KMS charges per active key version.
 
 ## Live setup and teardown (Google Cloud, 2026-10-21)
 
@@ -127,7 +133,11 @@ The aws CLI printed `DeletionDate` in a `-06:00` offset on a UTC+8 machine; tear
 - AWS KMS returns HTTP 400 for every client error, including `AccessDeniedException`, `UnrecognizedClientException` (unknown key ID or invalid session token), `InvalidSignatureException` (wrong secret), `NotFoundException` and `DisabledException`. A key pending deletion that was disabled first reports `DisabledException`.
 - With least-privilege credentials, AWS decrypting a ciphertext from another key returns `AccessDeniedException`; with a grant on both keys it returns `IncorrectKeyException`.
 - GCP returns 403 `PERMISSION_DENIED` for an ungranted key, and also for a **nonexistent** key when the caller lacks access; 404 only when the caller could see it. Wrong AAD, malformed ciphertext and ciphertext from another key are all 400 `INVALID_ARGUMENT`. A disabled version is 400 `FAILED_PRECONDITION`.
-- Disabling a key is not immediate for encryption: on both AWS and GCP, Decrypt was refused at once while Encrypt kept succeeding for 30+ seconds. The live suite accepts either outcome for `encrypt-disabled-*`.
+- Disabling a key is not immediate.
+  - On 2026-10-13, Decrypt was refused at once on both AWS and GCP, while Encrypt kept succeeding for 30+ seconds.
+  - On 2026-10-26, Decrypt kept succeeding after the disable: for 58 s on AWS and for 60 s on GCP.
+  - The suite now waits up to 3 minutes for `decrypt-disabled-*` and reports the wait as `waitedMs`. It accepts either outcome for `encrypt-disabled-*`.
+  - Scheduling the AWS key's deletion after the disable has taken effect answers `DisabledException`; before that, it answers `KMSInvalidStateException`.
 - OAuth: an unregistered key, unknown service account or invalid refresh token is 400 `invalid_grant`; a wrong client secret is 401 `invalid_client`.
 - OpenBao 2.7.1 Transit: wrong context, malformed or future-version ciphertext and other-key ciphertext are 400; a missing key on decrypt is 400 `encryption key not found`; a version below `min_decryption_version` is 400; denied, revoked or invalid tokens are 403; sealed is 503.
 - Latency from Taiwan to `us-east-1` through workerd: about 230 ms for the first Encrypt (connection setup) and 55 ms for a following Decrypt.
