@@ -2,14 +2,16 @@
 // service error code, and compares the sanitized upstream response with tests/fixtures/kms/<provider>.json.
 //   node scripts/test-live.mjs [--provider aws,gcp,openbao] [--record] [--mutate]
 // --record rewrites fixtures from what was observed; --mutate also disables/re-enables dedicated test keys.
-// Reads .strongroom/live/live.env when present. Prints one JSON report on stdout; exit 1 on any failure or drift.
+// Reads live.env from the live directory (scripts/live-dir.mjs) when present; scripts/live-env.mjs writes it. Prints one JSON report on stdout; exit 1 on any failure or drift.
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { randomBytes, generateKeyPairSync } from 'node:crypto';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { once } from 'node:events';
+import { join } from 'node:path';
 import { Miniflare } from 'miniflare';
+import { liveDir } from './live-dir.mjs';
 import { createProvider } from '../service/providers.ts';
 import { capabilities } from '../service/contract.ts';
 import { upstreamCode } from '../service/transport.ts';
@@ -19,7 +21,8 @@ import { Strongroom } from '../packages/strongroom/src/client.ts';
 const args = process.argv.slice(2);
 const flag = name => args.includes(name);
 const option = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
-if (existsSync('.strongroom/live/live.env')) process.loadEnvFile('.strongroom/live/live.env');
+const liveEnv = join(liveDir(), 'live.env');
+if (existsSync(liveEnv)) process.loadEnvFile(liveEnv);
 const env = process.env;
 const record = flag('--record'), mutate = flag('--mutate');
 const today = new Date().toISOString().slice(0, 10);
@@ -53,6 +56,7 @@ async function outcome(run) {
 // Each scenario: a fresh provider with a recording fetch. `expect` is the service-level contract.
 async function scenario(name, operation, config, expect, run, attempts = 1, ambient = {}) {
   let observed, calls;
+  const started = Date.now();
   for (let i = 0; i < attempts; i++) {
     const r = recorder();
     observed = await outcome(() => run(createProvider(config, r.fetcher, ambient)));
@@ -61,16 +65,19 @@ async function scenario(name, operation, config, expect, run, attempts = 1, ambi
     await new Promise(r => setTimeout(r, 3000)); // IAM and key-state changes are eventually consistent.
   }
   const last = calls.at(-1);
-  return { name, operation, expect, observed: observed.code, upstream: last ? { endpoint: last.endpoint, status: last.status, body: last.body } : null };
+  // waitedMs: how long an eventually consistent change took to show (report only; never recorded in fixtures).
+  return { name, operation, expect, observed: observed.code, upstream: last ? { endpoint: last.endpoint, status: last.status, body: last.body } : null, ...(attempts > 1 ? { waitedMs: Date.now() - started } : {}) };
 }
 
 async function aws() {
   const arn = env.STRONGROOM_LIVE_AWS_KEY_ARN, secondary = env.STRONGROOM_LIVE_AWS_SECONDARY_ARN;
-  if (!arn || !secondary) return { skipped: 'Set STRONGROOM_LIVE_AWS_KEY_ARN and STRONGROOM_LIVE_AWS_SECONDARY_ARN.' };
+  if (!arn || !secondary) return { skipped: 'Set STRONGROOM_LIVE_AWS_KEY_ARN and STRONGROOM_LIVE_AWS_SECONDARY_ARN: node scripts/live-env.mjs apply, then credentials.' };
   const region = arn.split(':')[3];
   const admin = JSON.parse(execFileSync('aws', ['configure', 'export-credentials', '--format', 'process'], { encoding: 'utf8' }));
   const adminCreds = { accessKeyId: admin.AccessKeyId, secretAccessKey: admin.SecretAccessKey, ...(admin.SessionToken ? { sessionToken: admin.SessionToken } : {}) };
-  const service = env.STRONGROOM_LIVE_AWS_CREDENTIALS_FILE ? JSON.parse(readFileSync(env.STRONGROOM_LIVE_AWS_CREDENTIALS_FILE, 'utf8')) : adminCreds;
+  // Only the credential fields: the key configuration rejects anything else.
+  const file = env.STRONGROOM_LIVE_AWS_CREDENTIALS_FILE && JSON.parse(readFileSync(env.STRONGROOM_LIVE_AWS_CREDENTIALS_FILE, 'utf8'));
+  const service = file ? { accessKeyId: file.accessKeyId, secretAccessKey: file.secretAccessKey, ...(file.sessionToken ? { sessionToken: file.sessionToken } : {}) } : adminCreds;
   const key = (keyId, creds = service) => ({ provider: 'aws', region, keyId, ...creds });
   const missing = arn.replace(/key\/.+$/, 'key/00000000-0000-4000-8000-000000000000');
   const foreign = `arn:aws:kms:${region}:111122223333:key/00000000-0000-4000-8000-000000000000`;
@@ -114,9 +121,9 @@ async function aws() {
       awsCli('disable-key');
       // Observed 2026-10-13: Decrypt is refused at once, Encrypt kept succeeding for 30+ s (eventual consistency).
       results.push(await scenario('encrypt-disabled-key', 'wrap', key(secondary, adminCreds), ['KMS_KEY_UNAVAILABLE', 'OK'], p => p.wrap(dek(), aad)));
-      results.push(await scenario('decrypt-disabled-key', 'unwrap', key(secondary, adminCreds), 'KMS_KEY_UNAVAILABLE', p => p.unwrap(secondaryBlob, aad), 10));
+      results.push(await scenario('decrypt-disabled-key', 'unwrap', key(secondary, adminCreds), 'KMS_KEY_UNAVAILABLE', p => p.unwrap(secondaryBlob, aad), 60));
       execFileSync('aws', ['kms', 'schedule-key-deletion', '--region', region, '--key-id', secondary, '--pending-window-in-days', '7'], { stdio: 'ignore' });
-      results.push(await scenario('decrypt-pending-deletion-key', 'unwrap', key(secondary, adminCreds), 'KMS_KEY_UNAVAILABLE', p => p.unwrap(secondaryBlob, aad), 10));
+      results.push(await scenario('decrypt-pending-deletion-key', 'unwrap', key(secondary, adminCreds), 'KMS_KEY_UNAVAILABLE', p => p.unwrap(secondaryBlob, aad), 60));
     } finally {
       try { awsCli('cancel-key-deletion'); } catch { /* not pending */ }
       awsCli('enable-key');
@@ -127,7 +134,7 @@ async function aws() {
 
 async function gcp() {
   const keyId = env.STRONGROOM_LIVE_GCP_KEY, secondary = env.STRONGROOM_LIVE_GCP_SECONDARY;
-  if (!keyId || !secondary) return { skipped: 'Set STRONGROOM_LIVE_GCP_KEY and STRONGROOM_LIVE_GCP_SECONDARY.' };
+  if (!keyId || !secondary) return { skipped: 'Set STRONGROOM_LIVE_GCP_KEY and STRONGROOM_LIVE_GCP_SECONDARY: node scripts/live-env.mjs apply --gcp-project P, then credentials.' };
   const adc = JSON.parse(readFileSync(env.GOOGLE_APPLICATION_CREDENTIALS ?? `${env.HOME}/.config/gcloud/application_default_credentials.json`, 'utf8'));
   if (adc.type !== 'authorized_user') return { skipped: 'Run gcloud auth application-default login; an authorized_user ADC file administers the test keys.' };
   const user = { clientId: adc.client_id, clientSecret: adc.client_secret, refreshToken: adc.refresh_token, quotaProject: adc.quota_project_id ?? keyId.split('/')[1] };
@@ -165,7 +172,7 @@ async function gcp() {
       await admin('DISABLED');
       // Google documents key-state changes as eventually consistent; Encrypt kept succeeding for 30+ s when observed.
       results.push(await scenario('encrypt-disabled-version', 'wrap', asUser(secondary), ['KMS_KEY_UNAVAILABLE', 'OK'], p => p.wrap(dek(), aad)));
-      results.push(await scenario('decrypt-disabled-version', 'unwrap', asUser(secondary), 'KMS_KEY_UNAVAILABLE', p => p.unwrap(secondaryBlob, aad), 10));
+      results.push(await scenario('decrypt-disabled-version', 'unwrap', asUser(secondary), 'KMS_KEY_UNAVAILABLE', p => p.unwrap(secondaryBlob, aad), 60));
     } finally { await admin('ENABLED'); }
   }
   return { results, e2e: { keys: { gcp: asService(keyId), gcpUser: asUser(keyId), ...(serviceAccount ? { gcpDenied: asService(secondary) } : {}) }, denied: serviceAccount ? 'gcpDenied' : null } };
@@ -293,7 +300,7 @@ function compare(provider, results) {
 
 const providers = (option('--provider') ?? 'aws,gcp,openbao').split(',');
 const runners = { aws, gcp, openbao };
-const report = { verified: today, record, mutate, providers: {}, failures: [], drift: [] };
+const report = { verified: today, record, mutate, providers: {}, failures: [], drift: [], warnings: [] };
 const cleanup = [];
 try {
   const e2eKeys = {}, denied = [];
@@ -308,6 +315,8 @@ try {
     report.failures.push(...r.results.filter(x => ![x.expect].flat().includes(x.observed)).map(x => `${name}/${x.name}: expected ${x.expect}, observed ${x.observed}`));
     report.drift.push(...compare(name, r.results));
     if (r.e2e) { Object.assign(e2eKeys, r.e2e.keys); if (r.e2e.denied) denied.push(r.e2e.denied); }
+    // Passing as the administrator proves nothing about least privilege: say so instead of looking green.
+    if (r.e2e && !r.e2e.denied) report.warnings.push(`${name}: no service credentials, so the service role ran as the administrator and "not granted" scenarios were not exercised. Run node scripts/live-env.mjs credentials.`);
   }
   if (Object.keys(e2eKeys).length) {
     if (!existsSync('dist/worker.js')) throw new Error('Run npm run build first.');
