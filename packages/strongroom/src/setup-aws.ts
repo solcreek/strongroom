@@ -46,7 +46,7 @@ function awsError(args: string[], code: string, stderr: string): SetupError {
 }
 const notFound = (e: unknown) => e instanceof SetupError && ['NotFoundException', 'NoSuchEntity', 'NoSuchEntityException'].includes(String(e.details.awsCode));
 // The aws CLI prints timestamps in an offset of its own choosing (seen live: -06:00 from a UTC+8 machine); report UTC.
-const utc = (v: unknown): string => { const t = typeof v === 'string' || typeof v === 'number' ? new Date(typeof v === 'number' ? v * 1000 : v) : null; return t && !Number.isNaN(t.getTime()) ? t.toISOString() : String(v); };
+const utc = (v: unknown): string => { const t = typeof v === 'string' || typeof v === 'number' ? new Date(typeof v === 'number' ? v * 1000 : v) : null; return t && !Number.isNaN(t.getTime()) ? t.toISOString() : typeof v === 'string' ? v : 'unknown'; };
 
 export async function setupAws(options: Record<string, string>) {
   const tenantId = options['--tenant'], keyRef = options['--key'] ?? 'primary';
