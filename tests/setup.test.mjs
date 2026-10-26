@@ -192,13 +192,15 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
   const { run } = await harness(t);
   const present = { 'iam list-user-tags': { stdout: { Tags: [{ Key: 'app', Value: 'strongroom' }, { Key: 'strongroom-tenant', Value: tenantTag('acme') }] } },
     'iam list-access-keys': { stdout: { AccessKeyMetadata: [{ AccessKeyId: 'AKIA1' }, { AccessKeyId: 'AKIA2' }] } }, 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn } } },
-    'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'app', TagValue: 'strongroom' }, { TagKey: 'strongroom-tenant', TagValue: tenantTag('acme') }] } }, 'kms schedule-key-deletion': { stdout: { DeletionDate: '2026-10-20' } } };
+    'kms list-resource-tags': { stdout: { Tags: [{ TagKey: 'app', TagValue: 'strongroom' }, { TagKey: 'strongroom-tenant', TagValue: tenantTag('acme') }] } }, 'kms schedule-key-deletion': { stdout: { DeletionDate: '2026-11-01T20:25:29.751000-06:00' } } };
   const r = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);
   assert.equal(r.code, 0, r.stderr);
   // Every ownership check (user, then key) runs before the first deletion.
   // Every ownership check runs before the first deletion; the key is scheduled before its alias goes, so a failed
   // schedule leaves the alias for a rerun to find.
   assert.deepEqual(r.ops, ['iam list-user-tags', 'kms describe-key', 'kms list-resource-tags', 'iam list-access-keys', 'iam delete-access-key', 'iam delete-access-key', 'iam delete-user-policy', 'iam delete-user', 'kms schedule-key-deletion', 'kms delete-alias']);
+  // The aws CLI's local-offset timestamp is reported in UTC.
+  assert.ok(JSON.parse(r.stdout).removed.some(x => x.deletionDate === '2026-11-02T02:25:29.751Z'));
   const failedSchedule = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], { ...present, 'kms schedule-key-deletion': err('KMSInternalException', 'ScheduleKeyDeletion') });
   assert.notEqual(failedSchedule.code, 0); assert.ok(!failedSchedule.ops.includes('kms delete-alias'));
   // A failure after the key was scheduled still reports the schedule, and says a rerun resumes.
@@ -207,11 +209,11 @@ test('teardown aws removes exactly what setup created and is idempotent', async 
   assert.notEqual(failedAlias.code, 0); assert.ok(partial.removed.some(x => x.kmsKeyScheduledForDeletion === arn)); assert.match(partial.next, /Rerun the same teardown/);
   // A rerun finds the key already pending deletion: reported as scheduled, not scheduled twice.
   const rerun = await run(['teardown', 'aws', '--tenant', 'acme', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'],
-    { ...present, 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn, KeyState: 'PendingDeletion', DeletionDate: '2026-10-28' } } } });
+    { ...present, 'iam list-user-tags': err('NoSuchEntity', 'ListUserTags'), 'kms describe-key': { stdout: { KeyMetadata: { Arn: arn, KeyState: 'PendingDeletion', DeletionDate: 1793500800 } } } });
   assert.equal(rerun.code, 0, rerun.stderr); assert.ok(!rerun.ops.includes('kms schedule-key-deletion'));
   const rerunOut = JSON.parse(rerun.stdout);
   assert.deepEqual([rerunOut.keptKey, rerunOut.keyScheduledForDeletion], [false, true]);
-  assert.ok(rerunOut.removed.some(x => x.kmsKeyAlreadyScheduledForDeletion === arn && x.deletionDate === '2026-10-28'));
+  assert.ok(rerunOut.removed.some(x => x.kmsKeyAlreadyScheduledForDeletion === arn && x.deletionDate === new Date(1793500800 * 1000).toISOString()));
   // Resources tagged for another tenant, or not created by setup, are refused before anything is deleted.
   const mutating = ops => ops.filter(o => /delete|schedule/.test(o));
   const foreignUser = await run(['teardown', 'aws', '--tenant', 'globex', '--name', 'sr-test', '--region', 'us-east-1', '--delete-key'], present);

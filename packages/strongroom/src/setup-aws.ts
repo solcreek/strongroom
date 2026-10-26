@@ -45,6 +45,8 @@ function awsError(args: string[], code: string, stderr: string): SetupError {
   return new SetupError('AWS_ERROR', `aws ${operation} failed.`, 0, { operation, awsCode: code || null });
 }
 const notFound = (e: unknown) => e instanceof SetupError && ['NotFoundException', 'NoSuchEntity', 'NoSuchEntityException'].includes(String(e.details.awsCode));
+// The aws CLI prints timestamps in an offset of its own choosing (seen live: -06:00 from a UTC+8 machine); report UTC.
+const utc = (v: unknown): string => { const t = typeof v === 'string' || typeof v === 'number' ? new Date(typeof v === 'number' ? v * 1000 : v) : null; return t && !Number.isNaN(t.getTime()) ? t.toISOString() : String(v); };
 
 export async function setupAws(options: Record<string, string>) {
   const tenantId = options['--tenant'], keyRef = options['--key'] ?? 'primary';
@@ -197,10 +199,10 @@ export async function teardownAws(options: Record<string, string>) {
     // Schedule first and remove the alias last: if scheduling fails, the alias still leads a rerun to the key.
     if (deleteKey && key) {
       const m = key.KeyMetadata;
-      if (m.KeyState === 'PendingDeletion') removed.push({ kmsKeyAlreadyScheduledForDeletion: m.Arn, deletionDate: m.DeletionDate });
+      if (m.KeyState === 'PendingDeletion') removed.push({ kmsKeyAlreadyScheduledForDeletion: m.Arn, deletionDate: utc(m.DeletionDate) });
       else {
         const r = await aws(['kms', 'schedule-key-deletion', '--key-id', m.Arn, '--pending-window-in-days', '7']);
-        removed.push({ kmsKeyScheduledForDeletion: m.Arn, deletionDate: r.DeletionDate });
+        removed.push({ kmsKeyScheduledForDeletion: m.Arn, deletionDate: utc(r.DeletionDate) });
       }
       scheduled = true;
       await aws(['kms', 'delete-alias', '--alias-name', `alias/${name}`]); removed.push({ alias: `alias/${name}` });
@@ -209,7 +211,7 @@ export async function teardownAws(options: Record<string, string>) {
   // Report the key's state, not what was asked: true kept, false scheduled for deletion (now or earlier),
   // null not found. "Not found here" must never read as a completed crypto-shred.
   return { removed, absent, keptKey: !deleteKey ? true : scheduled ? false : null, keyScheduledForDeletion: scheduled,
-    note: scheduled ? 'Decrypts start failing once AWS KMS applies the pending-deletion state (allow a short propagation delay before treating them as refused); the key is deleted at the deletionDate in removed, whatever waiting period it was scheduled with. Until then, aws kms cancel-key-deletion undoes it.'
+    note: scheduled ? 'Decrypts start failing once AWS KMS applies the pending-deletion state: observed within seconds, but allow a short propagation delay before treating them as refused. The key is deleted at the deletionDate in removed, whatever waiting period it was scheduled with. Until then, aws kms cancel-key-deletion undoes it.'
       : deleteKey ? `No key found at alias/${name} in ${o.region ?? 'the profile region'}, so nothing was scheduled now. An earlier teardown may already have scheduled the key and removed its alias, or the key is in another --region or under another --name. Find it by its strongroom-tenant tag (${tenantTag(tenant)}) with aws kms list-keys and aws kms list-resource-tags.`
       : 'The KMS key was kept; pass --delete-key to schedule its deletion.' };
 }

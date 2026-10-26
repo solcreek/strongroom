@@ -88,6 +88,38 @@ The silo flow was run end to end against Cloud KMS in a fresh project (`strongro
 
 **Destruction is not instant on Cloud KMS.** Google's pages do not state how quickly a version's state change reaches cryptographic requests; this run observed under about a minute. Allow for that before treating a tenant as shredded.
 
+## Live setup and teardown (AWS, 2026-10-26)
+
+The same flow against AWS KMS in `ap-northeast-1`, in one shared account, with tenants `acme` and `globex` on IAM users and `initech` on an IAM role. Results:
+
+| Step | Result |
+| --- | --- |
+| `setup aws --tenant acme --dry-run` | name `sr-acme-822b33ad87` (the same derivation as on GCP) |
+| `setup aws --tenant acme` | about 23 s; live verify passed on the 5th attempt (13 s) while the new IAM user propagated. Key tagged `app`, `strongroom-name`, `strongroom-tenant=<hash>`; user tagged `app`, `strongroom-tenant`; policy grants `kms:Encrypt`/`kms:Decrypt` on that key only, with the `strongroom` encryption context required; files 0600 in a 0700 directory |
+| local host with that config, `probe` | encrypt 932 ms (first call, Taiwan to Tokyo), decrypt 164 ms, changed context rejected |
+| 32-byte key via `--plaintext-file` | round-trips byte for byte; output file 0600 |
+| `decrypt` without a destination | exit 2 before any request |
+| context for another tenant | `FORBIDDEN`, `path: $.context.tenantId` |
+| changed `recordId` on decrypt | `DECRYPT_FAILED` |
+| `setup aws --tenant globex` in the same account | `sr-globex-5bc1a08d28`; no collision |
+| acme's envelope sent to globex's deployment | as acme: `FORBIDDEN`; relabelled as globex: `KMS_ACCESS_DENIED` (exit 6), since globex's IAM user has no grant on acme's key. GCP answers `DECRYPT_FAILED` here |
+| `setup aws --tenant globex --name <acme's name>` | `NOT_OWNED`; no key created |
+| `teardown aws --tenant globex --name <acme's name> --delete-key` | `NOT_OWNED`; acme's key `Enabled`, access key `Active`, probe still passes |
+| `setup aws --tenant initech --role-name R --no-verify` | role gets one inline policy, `strongroom-kms-sr-initech-4cdc1a4207` |
+| `setup aws --tenant umbrella --role-name R` (same role) | `NOT_OWNED`: the role already serves another deployment; no key created |
+| `setup aws --tenant initech --region us-east-1 --role-name R` | `NOT_OWNED`: the role's grant for that name is on another key; no key created in `us-east-1` |
+| `teardown aws --tenant umbrella --name <initech's name> --role-name R` | `NOT_OWNED`; the policy stays |
+| acme's printed teardown (`--delete-key`) | access key, user, then key scheduled (`deletionDate` 7 days out), then alias; `keptKey: false`; 11 s |
+| decrypt through acme's running host afterwards | `KMS_KEY_UNAVAILABLE` at the first poll (2 s after teardown), then `KMS_ACCESS_DENIED` from 10 s on, once the deleted IAM user stopped authenticating |
+| direct AWS KMS unwrap with the owner's identity | `KMSInvalidStateException` at the first poll (`KMS_KEY_UNAVAILABLE`) |
+| acme's teardown rerun | `keptKey: null`: the alias is gone, so the key is not found; the note says an earlier teardown may have scheduled it and gives the tag to search by |
+| globex `probe` after acme's shred | unaffected |
+| initech's printed teardown (`--role-name`) | role policy removed, key scheduled, alias removed; the role is left with no policies |
+
+**Pending deletion took effect within seconds on AWS**, unlike Cloud KMS. A key scheduled for deletion without being disabled first answers `KMSInvalidStateException`; one disabled first answers `DisabledException` (2026-10-13). Both map to `KMS_KEY_UNAVAILABLE`.
+
+The aws CLI printed `DeletionDate` in a `-06:00` offset on a UTC+8 machine; teardown now reports it in UTC.
+
 ## Observed provider behaviour (2026-10-13)
 
 - `containerCredentials` is exercised against real KMS through a loopback stand-in for the ECS/EKS credential endpoint that serves a real STS session; the endpoint itself is emulated there. On 2026-10-13 the same path also ran on real ECS Fargate (task role) through `deploy/terraform/aws-ecs-express`.
