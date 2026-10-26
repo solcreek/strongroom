@@ -38,6 +38,7 @@ Before 1.0.0, a minor version may change the HTTP API, CLI or configuration; the
 ### Fixed
 
 - Teardown no longer claims decrypts fail immediately after `--delete-key`. In a live run against Cloud KMS (2026-10-21), an unwrap still succeeded 47 s after a version was scheduled for destruction and failed about a minute later. The notes now say decrypts fail once the provider applies the change. `setup gcp`'s plan no longer says key rings cannot be deleted. `docs/testing.md` records the whole live run.
+- `teardown aws` reports `deletionDate` in UTC. The aws CLI printed it in an offset of its own (`-06:00` on a UTC+8 machine in a live run, 2026-10-26). `docs/testing.md` records that AWS run: on AWS, a key pending deletion refused decrypts within 2 seconds.
 
 ## [0.1.0] - 2026-10-13
 
