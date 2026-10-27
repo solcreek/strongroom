@@ -4,7 +4,7 @@
 
 Protect user-supplied API keys with a managed KMS. Your database stores only encrypted envelopes; when you need to call a third-party service, an authorized Strongroom service decrypts them.
 
-This is **0.1.0**, the first stable-tagged pre-1.0 release; the HTTP API is `v1` and the envelope format is version 1. Rust owns AES-256-GCM and the ciphertext format, and Cloudflare Workers is the primary target; containers run the same Rust Wasm and HTTP handler on a Node 24 host. The SDK and CLI are on npm as `strongroom`, published with provenance. The local development commands below neither publish nor deploy anything.
+This is **0.2.0**, a pre-1.0 release; the HTTP API is `v1` and the envelope format is version 1. Rust owns AES-256-GCM and the ciphertext format, and Cloudflare Workers is the primary target; containers run the same Rust Wasm and HTTP handler on a Node 24 host. The SDK and CLI are on npm as `strongroom`, published with provenance. The local development commands below neither publish nor deploy anything.
 
 - KMS: AWS KMS, Google Cloud KMS, Vault, OpenBao Transit.
 - HTTP: `POST /v1/encrypt`, `POST /v1/decrypt`, with fixed operation and key authorization.
