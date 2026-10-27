@@ -8,6 +8,8 @@ Before 1.0.0, a minor version may change the HTTP API, CLI or configuration; the
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-26
+
 ### Added
 
 - Binary plaintext, for secrets such as data keys. `POST /v1/encrypt` accepts `plaintextBase64url` instead of `plaintext`. `POST /v1/decrypt` returns the raw bytes as `application/octet-stream` when asked with `Accept`. The envelope format is unchanged, and text envelopes can be read either way.
@@ -78,6 +80,7 @@ First public release.
 - OpenTofu/Terraform modules for Cloud Run and ECS Express Mode using workload identity, a daemonless reproducible container image builder, and Docker, Kubernetes, Render and Railway templates.
 - npm releases through trusted publishing (OIDC) with provenance.
 
-[Unreleased]: https://github.com/solcreek/strongroom/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/solcreek/strongroom/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/solcreek/strongroom/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/solcreek/strongroom/compare/v0.1.0-alpha.1...v0.1.0
 [0.1.0-alpha.1]: https://github.com/solcreek/strongroom/releases/tag/v0.1.0-alpha.1
